@@ -41,7 +41,7 @@ _C_STD = 4
 _C_PLT = 90
 _C_ARR = 150
 
-_STALE_SECS = 300      # 5 min with no message -> feed considered stale
+_STALE_SECS = 120      # no heartbeat for this long -> feed considered stale
 
 
 def _blink(period_ms=500):

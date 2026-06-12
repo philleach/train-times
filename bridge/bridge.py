@@ -160,7 +160,8 @@ class Direction:
 
 
 _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
-_WC_POLL_INTERVAL = 60
+_HEARTBEAT_INTERVAL = 30   # publish a heartbeat this often so the Pico knows the feed is live
+_WC_EVERY_N_TICKS = 2      # poll TfL once every N heartbeats (~60s)
 
 
 def _fetch_wc_status() -> tuple[str, str] | None:
@@ -186,9 +187,16 @@ def _publish_wc(mqtt_client: mqtt.Client, status: str, reason: str):
     mqtt_client.publish(config.MQTT_WC_TOPIC, payload, retain=True)
 
 
-def _wc_poller(mqtt_client: mqtt.Client, stop: threading.Event):
+def _background_poller(mqtt_client: mqtt.Client, stop: threading.Event):
+    """Emit a periodic heartbeat (so the Pico can tell the feed is live) and
+    poll the W&C line status on a slower cadence."""
     last_published = ""
-    while not stop.wait(_WC_POLL_INTERVAL):
+    ticks = 0
+    while not stop.wait(_HEARTBEAT_INTERVAL):
+        mqtt_client.publish(config.MQTT_HEARTBEAT_TOPIC, b"1")
+        ticks += 1
+        if ticks % _WC_EVERY_N_TICKS != 0:
+            continue
         result = _fetch_wc_status()
         if result is None:
             continue
@@ -266,8 +274,8 @@ def run():
         _publish_wc(mqtt_client, status, reason)
         log.info("W&C line status (initial): %s%s", status, f" — {reason}" if reason else "")
     stop_event = threading.Event()
-    wc_thread = threading.Thread(target=_wc_poller, args=(mqtt_client, stop_event), daemon=True)
-    wc_thread.start()
+    poller_thread = threading.Thread(target=_background_poller, args=(mqtt_client, stop_event), daemon=True)
+    poller_thread.start()
 
     try:
         while True:
