@@ -185,6 +185,12 @@ def _draw_next(train, muted, now_mins):
         display.set_pen(cd_pen)
         display.text(cd_text, _C_STD + 5 * 24 + 14, _NEXT_Y + 4, scale=_SCALE)
 
+    # Coach count from scheduleFormation, top-right (grey, away from status)
+    length = train.get("length")
+    if length:
+        display.set_pen(_GREY)
+        _text_right("{} cars".format(length), WIDTH - 4, _NEXT_Y + 4)
+
     # Line 2: platform, arrival, status
     if platform:
         display.set_pen(_GREY if muted else _TEXT)

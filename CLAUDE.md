@@ -62,12 +62,13 @@ DEBUG_RAW=1 python bridge/bridge.py
 - **Pport structure:** `{ts, version, uR: {updateOrigin, TS?: {rid, uid, ssd, Location: [{tpl, ptd, dep: {et}, arr: {et}, plat}]}}}`
 - **Tiplocs:** Waterloo = `WATLOO`, Farnham = `FARNHAM`
 - `et` = estimated time (future), `at` = actual time (past)
+- **scheduleFormations (SF):** `uR.scheduleFormations: {rid, formation: {fid, coaches: {coach: [{coachNumber, coachClass}]}}}` — coach makeup; we extract `length` (coach count) and `first` (First-class count). Element text content uses the `""` key in the JSON feed.
 
 ## MQTT
 
 - Train topics: `trains/WAT/FNH` (outbound) and `trains/FNH/WAT` (return); the Pico's A button toggles which is shown
 - Payload: JSON array of up to 6 trains, sorted by `std`
-- Schema: `[{rid, std, etd, platform, cancelled, eta_dest}, ...]` (`eta_dest` = predicted arrival at the destination)
+- Schema: `[{rid, std, etd, platform, cancelled, eta_dest, length?, first?}, ...]` (`eta_dest` = predicted arrival at the destination; `length`/`first` = coach count / First-class count from scheduleFormation, when available)
 - W&C line topic: `lines/waterloo-city`, payload `{status, reason}` (from the TfL API, polled every 60s by the bridge)
 - All published with `retain=True` so the Pico gets current state on connect
 

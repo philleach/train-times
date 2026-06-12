@@ -171,6 +171,44 @@ def extract_origin_departure(pport: dict, origin: str = WATRLMN) -> dict | None:
     return None
 
 
+_SF_KEYS = ("scheduleFormations", "ns2:scheduleFormations", "fc:scheduleFormations")
+
+
+def _as_list(val) -> list:
+    if val is None:
+        return []
+    return val if isinstance(val, list) else [val]
+
+
+def extract_formation(pport: dict) -> dict | None:
+    """
+    If this pport is a scheduleFormations (SF) message, return
+    {rid, length, first} where `length` is the number of coaches and `first`
+    is how many are First class. Returns None if not an SF message.
+    """
+    ur = pport.get("uR", {})
+    sf = None
+    for key in _SF_KEYS:
+        if key in ur:
+            sf = ur[key]
+            break
+    if sf is None:
+        return None
+
+    sf = _as_list(sf)[0]  # one rid per SF message
+    rid = sf.get("rid")
+    formation = _as_list(sf.get("formation"))
+    if not rid or not formation:
+        return None
+
+    coaches = _as_list((formation[0].get("coaches") or {}).get("coach"))
+    if not coaches:
+        return None
+
+    first = sum(1 for c in coaches if str(c.get("coachClass", "")).lower() == "first")
+    return {"rid": rid, "length": len(coaches), "first": first}
+
+
 def extract_dest_eta(pport: dict, dest: str = FARNHAM) -> dict | None:
     """
     If this pport is a TS with an arrival estimate at `dest`, return

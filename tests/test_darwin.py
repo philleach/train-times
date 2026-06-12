@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from bridge.darwin import extract_schedules, extract_ts_update, parse_kafka_value
+from bridge.darwin import (
+    extract_formation,
+    extract_schedules,
+    extract_ts_update,
+    parse_kafka_value,
+)
 
 
 def _wrap(pport: dict) -> bytes:
@@ -209,3 +214,46 @@ class TestExtractTsUpdate:
         fnh = {"tpl": "FARNHAM", "pta": "15:22"}  # no arr field
         result = extract_ts_update(_pport_ts([fnh]), KNOWN)
         assert result is None  # only rid in update dict
+
+
+# ---------------------------------------------------------------------------
+# extract_formation (scheduleFormations)
+# ---------------------------------------------------------------------------
+
+def _pport_sf(coaches: list | dict, rid: str = "rid123", fid: str = "rid123-001") -> dict:
+    return {
+        "uR": {
+            "updateOrigin": "CIS",
+            "scheduleFormations": {
+                "rid": rid,
+                "formation": {"fid": fid, "coaches": {"coach": coaches}},
+            },
+        },
+    }
+
+
+class TestExtractFormation:
+    def test_basic_length(self):
+        coaches = [{"coachNumber": str(i), "coachClass": "Standard"} for i in range(1, 10)]
+        result = extract_formation(_pport_sf(coaches))
+        assert result == {"rid": "rid123", "length": 9, "first": 0}
+
+    def test_counts_first_class(self):
+        coaches = [
+            {"coachNumber": "1", "coachClass": "First"},
+            {"coachNumber": "2", "coachClass": "First"},
+            {"coachNumber": "3", "coachClass": "Standard"},
+        ]
+        result = extract_formation(_pport_sf(coaches))
+        assert result == {"rid": "rid123", "length": 3, "first": 2}
+
+    def test_single_coach_as_dict(self):
+        result = extract_formation(_pport_sf({"coachNumber": "1", "coachClass": "Standard"}))
+        assert result["length"] == 1
+
+    def test_not_an_sf_message(self):
+        assert extract_formation(_pport_ts([WAT_LOC])) is None
+
+    def test_no_coaches_returns_none(self):
+        pport = {"uR": {"scheduleFormations": {"rid": "r1", "formation": {"fid": "f1", "coaches": {}}}}}
+        assert extract_formation(pport) is None
