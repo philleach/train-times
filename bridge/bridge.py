@@ -26,6 +26,7 @@ from darwin import (
     FARNHAM,
     WATRLMN,
     extract_dest_eta,
+    extract_formation,
     extract_origin_departure,
     extract_schedules,
     extract_ts_update,
@@ -64,6 +65,7 @@ class Direction:
         self.known_rids: set[str] = set()    # rids confirmed for this direction
         self.pending: dict[str, dict] = {}   # origin departures awaiting dest confirmation
         self.state: dict[str, dict] = {}     # rid -> train dict
+        self.formation: dict[str, dict] = {}  # rid -> {length, first}; may arrive before the rid is known
         self.last_published: str = ""
 
     def _prune(self):
@@ -75,6 +77,7 @@ class Direction:
         for rid in stale:
             del self.state[rid]
             self.known_rids.discard(rid)
+            self.formation.pop(rid, None)
             log.debug("[%s] Pruned departed service %s", self.name, rid)
         for rid in [
             rid for rid, t in self.pending.items()
@@ -111,6 +114,7 @@ class Direction:
                 "platform": None,
                 "cancelled": False,
                 "eta_dest": sched["pta_dest"],
+                **self.formation.get(rid, {}),
             }
             log.info("[%s] %s dep %s arr %s", self.name, rid, sched["std"], sched["pta_dest"])
             self.publish(mqtt_client)
@@ -149,7 +153,7 @@ class Direction:
             rid = eta["rid"]
             if rid in self.pending:
                 self.known_rids.add(rid)
-                self.state[rid] = {**self.pending.pop(rid), "eta_dest": eta["eta_dest"]}
+                self.state[rid] = {**self.pending.pop(rid), "eta_dest": eta["eta_dest"], **self.formation.get(rid, {})}
                 log.info("[%s] Confirmed via TS: %s dep %s arr %s", self.name, rid, self.state[rid]["std"], eta["eta_dest"])
                 self.publish(mqtt_client)
             elif rid in self.state:
@@ -157,6 +161,22 @@ class Direction:
                 self.state[rid]["eta_dest"] = eta["eta_dest"]
                 if self.state[rid] != prev:
                     self.publish(mqtt_client)
+
+    def handle_formation(self, pport: dict, mqtt_client: mqtt.Client):
+        fo = extract_formation(pport)
+        if not fo:
+            return
+        rid = fo["rid"]
+        # only track formations for services we're following (bounds memory)
+        if rid not in self.known_rids and rid not in self.pending and rid not in self.state:
+            return
+        fields = {"length": fo["length"], "first": fo["first"]}
+        self.formation[rid] = fields
+        if rid in self.state and {k: self.state[rid].get(k) for k in fields} != fields:
+            self.state[rid].update(fields)
+            log.info("[%s] %s formation: %d cars%s", self.name, rid,
+                     fo["length"], f" ({fo['first']} first)" if fo["first"] else "")
+            self.publish(mqtt_client)
 
 
 _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
@@ -297,6 +317,7 @@ def run():
             for direction in directions:
                 direction.handle_schedules(pport, mqtt_client)
                 direction.handle_ts(pport, mqtt_client)
+                direction.handle_formation(pport, mqtt_client)
 
     except KeyboardInterrupt:
         log.info("Shutting down")
