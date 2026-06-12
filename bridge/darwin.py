@@ -64,11 +64,11 @@ def parse_kafka_value(raw: bytes) -> dict | None:
         return None
 
 
-def extract_wat_fnh_schedules(pport: dict) -> list[dict]:
+def extract_schedules(pport: dict, origin: str = WATRLMN, dest: str = FARNHAM) -> list[dict]:
     """
-    Return a list of {rid, std, pta_fnh} for any WAT→FNH services in a
+    Return a list of {rid, std, pta_dest} for any origin→dest services in a
     schedule message. Returns an empty list if this isn't a schedule message
-    or contains no WAT→FNH services.
+    or contains no matching services.
     """
     ur = pport.get("uR", {})
     schedules = ur.get("schedule", [])
@@ -78,39 +78,39 @@ def extract_wat_fnh_schedules(pport: dict) -> list[dict]:
     result = []
     for sc in schedules:
         or_ = sc.get("OR", {})
-        if not isinstance(or_, dict) or or_.get("tpl") != WATRLMN:
+        if not isinstance(or_, dict) or or_.get("tpl") != origin:
             continue
 
-        pta_fnh = None
+        pta_dest = None
 
         ips = sc.get("IP", [])
         if isinstance(ips, dict):
             ips = [ips]
         for ip in ips:
-            if ip.get("tpl") == FARNHAM:
-                pta_fnh = ip.get("pta")
+            if ip.get("tpl") == dest:
+                pta_dest = ip.get("pta")
                 break
 
-        if pta_fnh is None:
+        if pta_dest is None:
             dt = sc.get("DT", {})
-            if isinstance(dt, dict) and dt.get("tpl") == FARNHAM:
-                pta_fnh = dt.get("pta")
+            if isinstance(dt, dict) and dt.get("tpl") == dest:
+                pta_dest = dt.get("pta")
 
-        if pta_fnh is None:
+        if pta_dest is None:
             continue
 
         rid = sc.get("rid")
         std = or_.get("ptd")
         if rid and std:
-            result.append({"rid": rid, "std": std, "pta_fnh": pta_fnh})
+            result.append({"rid": rid, "std": std, "pta_dest": pta_dest})
 
     return result
 
 
-def extract_ts_update(pport: dict, known_rids: set) -> dict | None:
+def extract_ts_update(pport: dict, known_rids: set, origin: str = WATRLMN, dest: str = FARNHAM) -> dict | None:
     """
-    If this pport is a TS update for a known WAT→FNH rid, return a partial
-    update dict containing any of: rid, etd, platform, cancelled, eta_fnh.
+    If this pport is a TS update for a known origin→dest rid, return a partial
+    update dict containing any of: rid, etd, platform, cancelled, eta_dest.
     Returns None if not relevant.
     """
     ur = pport.get("uR", {})
@@ -125,7 +125,7 @@ def extract_ts_update(pport: dict, known_rids: set) -> dict | None:
     update: dict = {"rid": rid}
     for loc in _locations(ts):
         tpl = loc.get("tpl", "")
-        if tpl == WATRLMN:
+        if tpl == origin:
             dep = loc.get("dep") or {}
             cancelled = str(loc.get("cancelled", "false")).lower() == "true"
             etd = _time(dep)
@@ -133,18 +133,18 @@ def extract_ts_update(pport: dict, known_rids: set) -> dict | None:
             update["etd"] = "On time" if (etd is None or etd == std) else etd
             update["platform"] = _platform(loc.get("plat"))
             update["cancelled"] = cancelled
-        elif tpl == FARNHAM:
+        elif tpl == dest:
             arr = loc.get("arr") or {}
             eta = _time(arr)
             if eta:
-                update["eta_fnh"] = eta
+                update["eta_dest"] = eta
 
     return update if len(update) > 1 else None
 
 
-def extract_watrlmn_departure(pport: dict) -> dict | None:
+def extract_origin_departure(pport: dict, origin: str = WATRLMN) -> dict | None:
     """
-    If this pport is a TS with a WATRLMN departure (ptd present), return
+    If this pport is a TS with a departure from `origin` (ptd present), return
     {rid, std, etd, platform, cancelled}. Used to track candidate services
     whose schedule we don't have. Returns None otherwise.
     """
@@ -153,7 +153,7 @@ def extract_watrlmn_departure(pport: dict) -> dict | None:
     if not ts:
         return None
     for loc in _locations(ts):
-        if loc.get("tpl") != WATRLMN:
+        if loc.get("tpl") != origin:
             continue
         std = loc.get("ptd")
         if not std:
@@ -171,20 +171,20 @@ def extract_watrlmn_departure(pport: dict) -> dict | None:
     return None
 
 
-def extract_farnham_eta(pport: dict) -> dict | None:
+def extract_dest_eta(pport: dict, dest: str = FARNHAM) -> dict | None:
     """
-    If this pport is a TS with a FARNHAM arrival estimate, return
-    {rid, eta_fnh}. Returns None otherwise.
+    If this pport is a TS with an arrival estimate at `dest`, return
+    {rid, eta_dest}. Returns None otherwise.
     """
     ur = pport.get("uR", {})
     ts = ur.get("TS")
     if not ts:
         return None
     for loc in _locations(ts):
-        if loc.get("tpl") != FARNHAM:
+        if loc.get("tpl") != dest:
             continue
         arr = loc.get("arr") or {}
         eta = _time(arr) or loc.get("pta")
         if eta:
-            return {"rid": ts.get("rid"), "eta_fnh": eta}
+            return {"rid": ts.get("rid"), "eta_dest": eta}
     return None

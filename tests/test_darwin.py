@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from bridge.darwin import extract_ts_update, extract_wat_fnh_schedules, parse_kafka_value
+from bridge.darwin import extract_schedules, extract_ts_update, parse_kafka_value
 
 
 def _wrap(pport: dict) -> bytes:
@@ -74,53 +74,65 @@ class TestParseKafkaValue:
 
 
 # ---------------------------------------------------------------------------
-# extract_wat_fnh_schedules
+# extract_schedules
 # ---------------------------------------------------------------------------
 
-class TestExtractWatFnhSchedules:
+class TestExtractSchedules:
     def test_basic_farnham_in_ip(self):
         pport = _pport_schedule(_schedule())
-        result = extract_wat_fnh_schedules(pport)
+        result = extract_schedules(pport)
         assert len(result) == 1
-        assert result[0] == {"rid": "rid123", "std": "14:32", "pta_fnh": "15:22"}
+        assert result[0] == {"rid": "rid123", "std": "14:32", "pta_dest": "15:22"}
 
     def test_farnham_as_destination(self):
         sc = _schedule(ip_tpl=None, dt_tpl="FARNHAM")
-        result = extract_wat_fnh_schedules(_pport_schedule(sc))
+        result = extract_schedules(_pport_schedule(sc))
         assert len(result) == 1
-        assert result[0]["pta_fnh"] == "15:22"
+        assert result[0]["pta_dest"] == "15:22"
 
     def test_not_from_watrlmn(self):
         sc = _schedule(or_tpl="WOKING")
-        assert extract_wat_fnh_schedules(_pport_schedule(sc)) == []
+        assert extract_schedules(_pport_schedule(sc)) == []
 
     def test_no_farnham_stop(self):
         sc = _schedule(ip_tpl="WOKING")
-        assert extract_wat_fnh_schedules(_pport_schedule(sc)) == []
+        assert extract_schedules(_pport_schedule(sc)) == []
 
     def test_multiple_schedules_filters_correctly(self):
         sc1 = _schedule(rid="r1")
         sc2 = _schedule(or_tpl="WOKING", rid="r2")  # not from WAT
         sc3 = _schedule(ip_tpl="WOKING", rid="r3")  # doesn't call FNH
-        result = extract_wat_fnh_schedules(_pport_schedule([sc1, sc2, sc3]))
+        result = extract_schedules(_pport_schedule([sc1, sc2, sc3]))
         assert len(result) == 1
         assert result[0]["rid"] == "r1"
 
     def test_single_schedule_dict_not_list(self):
         sc = _schedule()
-        result = extract_wat_fnh_schedules(_pport_schedule(sc))
+        result = extract_schedules(_pport_schedule(sc))
         assert len(result) == 1
 
     def test_no_schedule_key(self):
         pport = _pport_ts([WAT_LOC])
-        assert extract_wat_fnh_schedules(pport) == []
+        assert extract_schedules(pport) == []
 
     def test_ip_as_single_dict(self):
         sc = _schedule()
         sc["IP"] = {"tpl": "FARNHAM", "pta": "15:22"}  # dict, not list
-        result = extract_wat_fnh_schedules(_pport_schedule(sc))
+        result = extract_schedules(_pport_schedule(sc))
         assert len(result) == 1
-        assert result[0]["pta_fnh"] == "15:22"
+        assert result[0]["pta_dest"] == "15:22"
+
+    def test_reverse_direction_fnh_to_wat(self):
+        # FNH→WAT: origin FARNHAM, terminating at WATRLMN
+        sc = _schedule(or_tpl="FARNHAM", ip_tpl=None, dt_tpl="WATRLMN", std="16:05", pta="17:01")
+        result = extract_schedules(_pport_schedule(sc), origin="FARNHAM", dest="WATRLMN")
+        assert len(result) == 1
+        assert result[0] == {"rid": "rid123", "std": "16:05", "pta_dest": "17:01"}
+
+    def test_reverse_direction_ignores_outbound(self):
+        # A WAT→FNH schedule must not match the reverse direction
+        sc = _schedule()
+        assert extract_schedules(_pport_schedule(sc), origin="FARNHAM", dest="WATRLMN") == []
 
 
 # ---------------------------------------------------------------------------
@@ -144,13 +156,13 @@ class TestExtractTsUpdate:
         pport = _pport_ts([FNH_LOC])
         result = extract_ts_update(pport, KNOWN)
         assert result is not None
-        assert result["eta_fnh"] == "15:28"
+        assert result["eta_dest"] == "15:28"
 
     def test_both_stops(self):
         pport = _pport_ts([WAT_LOC, FNH_LOC])
         result = extract_ts_update(pport, KNOWN)
         assert result["etd"] == "14:35"
-        assert result["eta_fnh"] == "15:28"
+        assert result["eta_dest"] == "15:28"
 
     def test_unknown_rid_returns_none(self):
         pport = _pport_ts([WAT_LOC])
@@ -191,7 +203,7 @@ class TestExtractTsUpdate:
     def test_at_time_used_when_no_et(self):
         fnh = {"tpl": "FARNHAM", "pta": "15:22", "arr": {"at": "15:25"}}
         result = extract_ts_update(_pport_ts([fnh]), KNOWN)
-        assert result["eta_fnh"] == "15:25"
+        assert result["eta_dest"] == "15:25"
 
     def test_no_fnh_arr_eta_skipped(self):
         fnh = {"tpl": "FARNHAM", "pta": "15:22"}  # no arr field

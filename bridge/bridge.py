@@ -13,17 +13,22 @@ Two Darwin message types are used:
 import json
 import logging
 import os
+import threading
 import time
+import urllib.error
+import urllib.request
 
 import paho.mqtt.client as mqtt
 from confluent_kafka import Consumer, KafkaError, TopicPartition
 
 import config
 from darwin import (
-    extract_farnham_eta,
+    FARNHAM,
+    WATRLMN,
+    extract_dest_eta,
+    extract_origin_departure,
+    extract_schedules,
     extract_ts_update,
-    extract_wat_fnh_schedules,
-    extract_watrlmn_departure,
     parse_kafka_value,
 )
 
@@ -35,12 +40,6 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 DEBUG_RAW = os.environ.get("DEBUG_RAW", "").lower() in ("1", "true")
-
-_known_rids: set[str] = set()    # rids confirmed to serve WAT→FNH
-_pending_wat: dict[str, dict] = {}  # WATRLMN departures seen; awaiting FARNHAM confirmation
-_state: dict[str, dict] = {}    # rid -> train dict
-_last_published: str = ""
-
 
 def _now_mins() -> int:
     t = time.localtime()
@@ -54,103 +53,151 @@ def _hhmm_to_mins(hhmm: str) -> int:
         return 0
 
 
-def _prune():
-    now = _now_mins()
-    stale = [
-        rid for rid, t in _state.items()
-        if t.get("std") and _hhmm_to_mins(t["std"]) < now - 2
-    ]
-    for rid in stale:
-        del _state[rid]
-        _known_rids.discard(rid)
-        log.debug("Pruned departed service %s", rid)
-    stale_pending = [
-        rid for rid, t in _pending_wat.items()
-        if t.get("std") and _hhmm_to_mins(t["std"]) < now - 2
-    ]
-    for rid in stale_pending:
-        del _pending_wat[rid]
+class Direction:
+    """A single travel direction (e.g. WAT→FNH) with its own state and topic."""
+
+    def __init__(self, name: str, origin: str, dest: str, topic: str):
+        self.name = name          # human label, e.g. "WAT→FNH"
+        self.origin = origin      # origin tiploc
+        self.dest = dest          # destination tiploc
+        self.topic = topic        # MQTT topic
+        self.known_rids: set[str] = set()    # rids confirmed for this direction
+        self.pending: dict[str, dict] = {}   # origin departures awaiting dest confirmation
+        self.state: dict[str, dict] = {}     # rid -> train dict
+        self.last_published: str = ""
+
+    def _prune(self):
+        now = _now_mins()
+        stale = [
+            rid for rid, t in self.state.items()
+            if t.get("std") and _hhmm_to_mins(t["std"]) < now - 2
+        ]
+        for rid in stale:
+            del self.state[rid]
+            self.known_rids.discard(rid)
+            log.debug("[%s] Pruned departed service %s", self.name, rid)
+        for rid in [
+            rid for rid, t in self.pending.items()
+            if t.get("std") and _hhmm_to_mins(t["std"]) < now - 2
+        ]:
+            del self.pending[rid]
+
+    def _upcoming(self) -> list:
+        self._prune()
+        return sorted(self.state.values(), key=lambda t: t.get("std", "99:99"))[:6]
+
+    def publish(self, mqtt_client: mqtt.Client):
+        trains = self._upcoming()
+        payload = json.dumps(trains)
+        if payload == self.last_published:
+            return
+        mqtt_client.publish(self.topic, payload, retain=True)
+        self.last_published = payload
+        log.info("[%s] Published %d trains", self.name, len(trains))
+
+    def handle_schedules(self, pport: dict, mqtt_client: mqtt.Client):
+        now = _now_mins()
+        for sched in extract_schedules(pport, self.origin, self.dest):
+            rid = sched["rid"]
+            if rid in self.known_rids:
+                continue
+            if _hhmm_to_mins(sched["std"]) < now - 2:
+                continue  # already departed
+            self.known_rids.add(rid)
+            self.state[rid] = {
+                "rid": rid,
+                "std": sched["std"],
+                "etd": "On time",
+                "platform": None,
+                "cancelled": False,
+                "eta_dest": sched["pta_dest"],
+            }
+            log.info("[%s] %s dep %s arr %s", self.name, rid, sched["std"], sched["pta_dest"])
+            self.publish(mqtt_client)
+
+    def handle_ts(self, pport: dict, mqtt_client: mqtt.Client):
+        now = _now_mins()
+
+        # Update services we already know about
+        update = extract_ts_update(pport, self.known_rids, self.origin, self.dest)
+        if update:
+            rid = update.pop("rid")
+            if rid in self.state:
+                prev = dict(self.state[rid])
+                self.state[rid].update(update)
+                if self.state[rid] != prev:
+                    t = self.state[rid]
+                    log.info(
+                        "[%s] %s  dep %s (%s)  arr %s  plt %s%s",
+                        self.name, rid, t["std"], t["etd"], t.get("eta_dest", "?"),
+                        t.get("platform", "?"), "  CANC" if t["cancelled"] else "",
+                    )
+                    self.publish(mqtt_client)
+
+        # Track origin departures for services we don't have a schedule for
+        dep = extract_origin_departure(pport, self.origin)
+        if dep:
+            rid = dep["rid"]
+            if rid not in self.known_rids and rid not in self.pending:
+                if _hhmm_to_mins(dep["std"]) >= now - 2:
+                    self.pending[rid] = dep
+                    log.debug("[%s] Pending departure: %s dep %s", self.name, rid, dep["std"])
+
+        # Confirm pending services when the destination appears
+        eta = extract_dest_eta(pport, self.dest)
+        if eta:
+            rid = eta["rid"]
+            if rid in self.pending:
+                self.known_rids.add(rid)
+                self.state[rid] = {**self.pending.pop(rid), "eta_dest": eta["eta_dest"]}
+                log.info("[%s] Confirmed via TS: %s dep %s arr %s", self.name, rid, self.state[rid]["std"], eta["eta_dest"])
+                self.publish(mqtt_client)
+            elif rid in self.state:
+                prev = dict(self.state[rid])
+                self.state[rid]["eta_dest"] = eta["eta_dest"]
+                if self.state[rid] != prev:
+                    self.publish(mqtt_client)
 
 
-def _upcoming() -> list:
-    _prune()
-    return sorted(_state.values(), key=lambda t: t.get("std", "99:99"))[:6]
+_TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
+_WC_POLL_INTERVAL = 60
 
 
-def _publish(mqtt_client: mqtt.Client):
-    global _last_published
-    trains = _upcoming()
-    payload = json.dumps(trains)
-    if payload == _last_published:
-        return
-    mqtt_client.publish(config.MQTT_TOPIC, payload, retain=True)
-    _last_published = payload
-    log.info("Published %d trains", len(trains))
+def _fetch_wc_status() -> tuple[str, str] | None:
+    """Return (status, reason) for the Waterloo & City line, or None on failure."""
+    try:
+        req = urllib.request.Request(_TFL_URL, headers={"User-Agent": "train-times-bridge/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        ls = data[0]["lineStatuses"][0]
+        status = ls["statusSeverityDescription"]
+        reason = ls.get("reason", "") or ""
+        # TfL reasons are prefixed with the line name; strip it for brevity
+        if reason.startswith("Waterloo & City Line: "):
+            reason = reason[len("Waterloo & City Line: "):]
+        return status, reason
+    except Exception as e:
+        log.warning("TfL W&C status fetch failed: %s", e)
+        return None
 
 
-def _handle_schedules(pport: dict, mqtt_client: mqtt.Client):
-    now = _now_mins()
-    for sched in extract_wat_fnh_schedules(pport):
-        rid = sched["rid"]
-        if rid in _known_rids:
+def _publish_wc(mqtt_client: mqtt.Client, status: str, reason: str):
+    payload = json.dumps({"status": status, "reason": reason})
+    mqtt_client.publish(config.MQTT_WC_TOPIC, payload, retain=True)
+
+
+def _wc_poller(mqtt_client: mqtt.Client, stop: threading.Event):
+    last_published = ""
+    while not stop.wait(_WC_POLL_INTERVAL):
+        result = _fetch_wc_status()
+        if result is None:
             continue
-        if _hhmm_to_mins(sched["std"]) < now - 2:
-            continue  # already departed
-        _known_rids.add(rid)
-        _state[rid] = {
-            "rid": rid,
-            "std": sched["std"],
-            "etd": "On time",
-            "platform": None,
-            "cancelled": False,
-            "eta_fnh": sched["pta_fnh"],
-        }
-        log.info("WAT→FNH: %s dep %s arr FNH %s", rid, sched["std"], sched["pta_fnh"])
-        _publish(mqtt_client)
-
-
-def _handle_ts(pport: dict, mqtt_client: mqtt.Client):
-    now = _now_mins()
-
-    # Update known WAT→FNH services
-    update = extract_ts_update(pport, _known_rids)
-    if update:
-        rid = update.pop("rid")
-        if rid in _state:
-            prev = dict(_state[rid])
-            _state[rid].update(update)
-            if _state[rid] != prev:
-                t = _state[rid]
-                log.info(
-                    "%s  dep %s (%s)  arr FNH %s  plt %s%s",
-                    rid, t["std"], t["etd"], t.get("eta_fnh", "?"),
-                    t.get("platform", "?"), "  CANC" if t["cancelled"] else "",
-                )
-                _publish(mqtt_client)
-
-    # Track WATRLMN departures for services we don't have a schedule for
-    dep = extract_watrlmn_departure(pport)
-    if dep:
-        rid = dep["rid"]
-        if rid not in _known_rids and rid not in _pending_wat:
-            if _hhmm_to_mins(dep["std"]) >= now - 2:
-                _pending_wat[rid] = dep
-                log.debug("Pending WAT departure: %s dep %s", rid, dep["std"])
-
-    # Confirm pending services when FARNHAM appears
-    fnh = extract_farnham_eta(pport)
-    if fnh:
-        rid = fnh["rid"]
-        if rid in _pending_wat:
-            _known_rids.add(rid)
-            _state[rid] = {**_pending_wat.pop(rid), "eta_fnh": fnh["eta_fnh"]}
-            log.info("Confirmed WAT→FNH via TS: %s dep %s arr FNH %s", rid, _state[rid]["std"], fnh["eta_fnh"])
-            _publish(mqtt_client)
-        elif rid in _state:
-            prev = dict(_state[rid])
-            _state[rid]["eta_fnh"] = fnh["eta_fnh"]
-            if _state[rid] != prev:
-                _publish(mqtt_client)
+        status, reason = result
+        key = status + "|" + reason
+        if key != last_published:
+            _publish_wc(mqtt_client, status, reason)
+            last_published = key
+            log.info("W&C line status: %s%s", status, f" — {reason}" if reason else "")
 
 
 def _make_consumer() -> Consumer:
@@ -207,6 +254,21 @@ def run():
     mqtt_client = _make_mqtt()
     log.info("Connected to MQTT at %s:%s", config.MQTT_HOST, config.MQTT_PORT)
 
+    directions = [
+        Direction("WAT→FNH", WATRLMN, FARNHAM, config.MQTT_TOPIC),
+        Direction("FNH→WAT", FARNHAM, WATRLMN, config.MQTT_TOPIC_RETURN),
+    ]
+
+    # Publish W&C status immediately, then poll every 60s
+    result = _fetch_wc_status()
+    if result:
+        status, reason = result
+        _publish_wc(mqtt_client, status, reason)
+        log.info("W&C line status (initial): %s%s", status, f" — {reason}" if reason else "")
+    stop_event = threading.Event()
+    wc_thread = threading.Thread(target=_wc_poller, args=(mqtt_client, stop_event), daemon=True)
+    wc_thread.start()
+
     try:
         while True:
             msg = consumer.poll(timeout=1.0)
@@ -224,12 +286,14 @@ def run():
             if DEBUG_RAW:
                 log.debug("RAW: %s", json.dumps(pport, indent=2))
 
-            _handle_schedules(pport, mqtt_client)
-            _handle_ts(pport, mqtt_client)
+            for direction in directions:
+                direction.handle_schedules(pport, mqtt_client)
+                direction.handle_ts(pport, mqtt_client)
 
     except KeyboardInterrupt:
         log.info("Shutting down")
     finally:
+        stop_event.set()
         consumer.close()
         mqtt_client.loop_stop()
 
