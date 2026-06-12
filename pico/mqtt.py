@@ -1,13 +1,22 @@
 import time
 
 import ujson
-from umqtt.robust import MQTTClient
+from umqtt.simple import MQTTClient
 
 _TOPIC_OUT = b"trains/WAT/FNH"   # outbound: Waterloo -> Farnham
 _TOPIC_RET = b"trains/FNH/WAT"   # return:   Farnham -> Waterloo
 _TOPIC_WC = b"lines/waterloo-city"
 _TOPIC_HB = b"trains/heartbeat"  # periodic liveness ping from the bridge
+_TOPICS = (_TOPIC_OUT, _TOPIC_RET, _TOPIC_WC, _TOPIC_HB)
+
+# We only ever subscribe, never publish, so the broker would drop our idle
+# connection after ~1.5x keepalive. Ping well inside that window to stay alive.
+_KEEPALIVE = 60
+_PING_INTERVAL_MS = 30_000
+
 _client = None
+_conn = None          # saved params for reconnect
+_last_ping_ms = 0
 _trains_out = []
 _trains_ret = []
 _wc_status = None
@@ -27,29 +36,54 @@ def _on_message(topic, payload):
             doc = ujson.loads(payload)
             _wc_status = doc.get("status")
             _wc_reason = doc.get("reason", "") or ""
+        # _TOPIC_HB needs no handling beyond the freshness stamp above
     except Exception as e:
         print("MQTT parse error:", e)
 
 
-def connect(host, port=8883, user=None, password=None, client_id="pico-trains"):
-    global _client
-    ssl_params = {"server_hostname": host}
-    _client = MQTTClient(
-        client_id, host, port=port,
-        user=user, password=password,
-        keepalive=60, ssl=True, ssl_params=ssl_params,
+def _make_client():
+    host = _conn["host"]
+    return MQTTClient(
+        _conn["client_id"], host, port=_conn["port"],
+        user=_conn["user"], password=_conn["password"],
+        keepalive=_KEEPALIVE, ssl=True, ssl_params={"server_hostname": host},
     )
+
+
+def _connect_and_subscribe():
+    global _client, _last_ping_ms
+    _client = _make_client()
     _client.set_callback(_on_message)
     _client.connect()
-    _client.subscribe(_TOPIC_OUT)
-    _client.subscribe(_TOPIC_RET)
-    _client.subscribe(_TOPIC_WC)
-    _client.subscribe(_TOPIC_HB)
+    for topic in _TOPICS:
+        _client.subscribe(topic)
+    _last_ping_ms = time.ticks_ms()
+
+
+def connect(host, port=8883, user=None, password=None, client_id="pico-trains"):
+    global _conn
+    _conn = {"host": host, "port": port, "user": user,
+             "password": password, "client_id": client_id}
+    _connect_and_subscribe()
 
 
 def check():
-    if _client:
+    """Process incoming messages and keep the connection alive. Reconnects and
+    re-subscribes if the link drops (otherwise the broker stops delivering)."""
+    global _last_ping_ms
+    if _client is None:
+        return
+    try:
         _client.check_msg()
+        if time.ticks_diff(time.ticks_ms(), _last_ping_ms) >= _PING_INTERVAL_MS:
+            _client.ping()
+            _last_ping_ms = time.ticks_ms()
+    except (OSError, MemoryError) as e:
+        print("MQTT reconnecting:", e)
+        try:
+            _connect_and_subscribe()
+        except OSError as e2:
+            print("MQTT reconnect failed:", e2)
 
 
 def get_trains(outbound=True):
