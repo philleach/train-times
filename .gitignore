@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Credentials — copy .env.example to .env and fill in values
+pico/config.py
+bridge/.env

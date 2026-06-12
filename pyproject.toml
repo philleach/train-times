@@ -1,0 +1,20 @@
+[project]
+name = "train-times"
+version = "0.1.0"
+description = "Darwin → MQTT bridge + MicroPython display for Waterloo → Farnham trains"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "confluent-kafka",
+    "paho-mqtt",
+    "httpx",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
