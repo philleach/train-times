@@ -24,7 +24,7 @@ _LED_BY_SEVERITY = ((0, 80, 30), (90, 45, 0), (90, 0, 0))  # green / amber / red
 _manual_brightness = None
 # Direction: True = outbound (WAT->FNH), False = return (FNH->WAT)
 _outbound = True
-_STALE_SECS = 300
+_STALE_SECS = 120
 
 
 def _init_wifi():

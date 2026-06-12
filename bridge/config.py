@@ -19,3 +19,4 @@ MQTT_PASSWORD = os.environ["MQTT_PASSWORD"]
 MQTT_TOPIC = "trains/WAT/FNH"
 MQTT_TOPIC_RETURN = "trains/FNH/WAT"
 MQTT_WC_TOPIC = "lines/waterloo-city"
+MQTT_HEARTBEAT_TOPIC = "trains/heartbeat"

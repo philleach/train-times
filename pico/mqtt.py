@@ -6,6 +6,7 @@ from umqtt.robust import MQTTClient
 _TOPIC_OUT = b"trains/WAT/FNH"   # outbound: Waterloo -> Farnham
 _TOPIC_RET = b"trains/FNH/WAT"   # return:   Farnham -> Waterloo
 _TOPIC_WC = b"lines/waterloo-city"
+_TOPIC_HB = b"trains/heartbeat"  # periodic liveness ping from the bridge
 _client = None
 _trains_out = []
 _trains_ret = []
@@ -43,6 +44,7 @@ def connect(host, port=8883, user=None, password=None, client_id="pico-trains"):
     _client.subscribe(_TOPIC_OUT)
     _client.subscribe(_TOPIC_RET)
     _client.subscribe(_TOPIC_WC)
+    _client.subscribe(_TOPIC_HB)
 
 
 def check():
