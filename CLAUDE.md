@@ -65,10 +65,11 @@ DEBUG_RAW=1 python bridge/bridge.py
 
 ## MQTT
 
-- Topic: `trains/WAT/FNH`
+- Train topics: `trains/WAT/FNH` (outbound) and `trains/FNH/WAT` (return); the Pico's A button toggles which is shown
 - Payload: JSON array of up to 6 trains, sorted by `std`
-- Schema: `[{rid, std, etd, platform, cancelled, eta_fnh}, ...]`
-- Published with `retain=True` so Pico gets current state on connect
+- Schema: `[{rid, std, etd, platform, cancelled, eta_dest}, ...]` (`eta_dest` = predicted arrival at the destination)
+- W&C line topic: `lines/waterloo-city`, payload `{status, reason}` (from the TfL API, polled every 60s by the bridge)
+- All published with `retain=True` so the Pico gets current state on connect
 
 ## Desktop Test Tool
 

@@ -24,3 +24,39 @@ def _delay_mins(std: str, etd: str) -> int:
         return diff if diff >= 0 else diff + 1440
     except Exception:
         return 0
+
+
+def short_status(train: dict) -> str:
+    """Compact status for narrow rows: ON / +Nm / DLY / CANC."""
+    full = format_status(train)
+    if full == "ON TIME":
+        return "ON"
+    if full == "DELAY":
+        return "DLY"
+    return full  # CANC, +Nm, or raw etd
+
+
+# severity: 0 = on time, 1 = delayed, 2 = cancelled
+def severity(train: dict) -> int:
+    status = format_status(train)
+    if status == "CANC":
+        return 2
+    if status == "ON TIME":
+        return 0
+    return 1
+
+
+def mins_until(hhmm: str, now_mins: int):
+    """Minutes from now_mins until hh:mm (local). None if unparseable.
+
+    Handles midnight wrap: a time up to ~2h in the past reads as negative
+    (just departed); anything further back is treated as tomorrow.
+    """
+    try:
+        h, m = int(hhmm[:2]), int(hhmm[3:5])
+    except Exception:
+        return None
+    diff = (h * 60 + m) - now_mins
+    if diff < -120:
+        diff += 1440
+    return diff
