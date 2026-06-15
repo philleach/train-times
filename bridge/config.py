@@ -24,7 +24,10 @@ MQTT_PASSWORD = os.environ["MQTT_PASSWORD"]
 # coach formation when Darwin's Push Port doesn't carry it. Optional: leave
 # LDBSV_KEY unset to disable the lookup.
 LDBSV_KEY = os.getenv("LDBSV_KEY", "")
-LDBSV_BASE_URL = os.getenv("LDBSV_BASE_URL", "https://realtime.nationalrail.co.uk/LDBSVWS")
+LDBSV_BASE_URL = os.getenv(
+    "LDBSV_BASE_URL",
+    "https://api1.raildata.org.uk/1010-live-arrival-and-departure-boards---staff-version1_0/LDBSVWS",
+)
 
 MQTT_TOPIC = "trains/WAT/FNH"
 MQTT_TOPIC_RETURN = "trains/FNH/WAT"

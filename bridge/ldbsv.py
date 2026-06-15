@@ -2,97 +2,128 @@
 OpenLDBSVWS (Live Arrival & Departure Boards, Staff Version) REST client.
 
 Darwin's Push Port doesn't always carry scheduleFormations for the services we
-track. LDBSV's GetServiceDetailsByRID returns coach formation for a service
-looked up by its RID — which we already have from Darwin — so we use it as a
-fallback to fill in coach counts.
+track, so we fill in coach counts from LDBSV (Rail Data Marketplace REST API).
 
-Rail Data Marketplace REST API (Swagger): JSON over HTTPS with an x-apikey
-header. GET /api/20220120/GetServiceDetailsByRID/{rid} -> ServiceDetails.
+The per-RID operation (GetServiceDetailsByRID) isn't routed on the RDM product,
+but GetDepBoardWithDetails is — and its response carries `formation` per
+service. So we fetch the departure board for a direction (origin CRS, filtered
+to the destination CRS) and read coach counts straight from it, keyed by RID.
 
-Run directly to inspect a real response (key comes from bridge/.env):
+Run directly to inspect a board (key/base URL come from bridge/.env):
 
-    uv run python bridge/ldbsv.py 202606157678623
+    uv run python bridge/ldbsv.py WAT FNH
 """
 
-import json
 import logging
 import sys
+from datetime import datetime
 
 import httpx
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "https://realtime.nationalrail.co.uk/LDBSVWS"
+# RDM gateway for the "Live Arrival & Departure Boards - Staff Version" product.
+DEFAULT_BASE_URL = ("https://api1.raildata.org.uk/"
+                    "1010-live-arrival-and-departure-boards---staff-version1_0/LDBSVWS")
 _API_VERSION = "20220120"
+
+# Waterloo / Farnham CRS codes (the bridge works in tiplocs; these are the
+# public station codes LDBSV expects).
+WAT = "WAT"
+FNH = "FNH"
 
 
 def _coach_counts(coaches: list) -> tuple[int, int]:
     length = len(coaches)
+    # coachClass is "First", "Mixed" or "Standard"; only "First" counts.
     first = sum(1 for c in coaches
-                if str(c.get("coachClass", "")).strip().lower() in ("first", "f"))
+                if str(c.get("coachClass", "")).strip().lower() == "first")
     return length, first
 
 
-def parse_formation(details: dict) -> dict | None:
-    """Derive {length, first} from a ServiceDetails document, or None."""
-    # formation is an array of per-tiploc LocFormationData; the first non-empty
-    # set of coaches is the train as formed at origin.
-    coaches: list = []
-    for f in details.get("formation") or []:
-        if f.get("coaches"):
-            coaches = f["coaches"]
-            break
-
+def parse_service_formation(service: dict) -> dict | None:
+    """Derive {length, first} from one board service, or None."""
+    coaches = (service.get("formation") or {}).get("coaches") or []
     length, first = (_coach_counts(coaches) if coaches else (0, 0))
     if not length:
-        # No per-coach detail — fall back to the coach count on a calling point.
-        for loc in details.get("locations") or []:
-            if loc.get("length"):
-                length = loc["length"]
-                break
+        length = service.get("length") or 0  # car count without per-coach detail
     if not length:
         return None
     return {"length": length, "first": first}
 
 
-def fetch_service_details(rid: str, key: str, base_url: str = DEFAULT_BASE_URL,
-                          timeout: float = 10.0) -> dict:
-    url = "%s/api/%s/GetServiceDetailsByRID/%s" % (base_url, _API_VERSION, rid)
-    resp = httpx.get(url, headers={"x-apikey": key, "Accept": "application/json"},
-                     timeout=timeout)
+def formations_from_board(board: dict) -> dict:
+    """Map rid -> {length, first} for every service on a board that has one."""
+    out = {}
+    for s in board.get("trainServices") or []:
+        rid = s.get("rid")
+        if not rid:
+            continue
+        fo = parse_service_formation(s)
+        if fo:
+            out[rid] = fo
+    return out
+
+
+def fetch_dep_board(origin_crs: str, dest_crs: str, key: str,
+                    base_url: str = DEFAULT_BASE_URL, when: str | None = None,
+                    timeout: float = 10.0) -> dict:
+    when = when or datetime.now().strftime("%Y%m%dT%H%M%S")
+    url = "%s/api/%s/GetDepBoardWithDetails/%s/%s" % (
+        base_url, _API_VERSION, origin_crs.upper(), when)
+    params = {"filterCrs": dest_crs.upper(), "filterType": "to", "numRows": 10}
+    resp = httpx.get(url, params=params, timeout=timeout,
+                     headers={"x-apikey": key, "Accept": "application/json"})
     resp.raise_for_status()
     return resp.json()
 
 
-def formation_for_rid(rid: str, key: str, base_url: str = DEFAULT_BASE_URL) -> dict | None:
-    """Return {length, first} for a RID via LDBSV, or None on any failure."""
+def formations(origin_crs: str, dest_crs: str, key: str,
+               base_url: str = DEFAULT_BASE_URL) -> dict:
+    """rid -> {length, first} for upcoming origin->dest services, or {}.
+
+    Never raises — returns {} on any failure so callers can treat LDBSV as a
+    best-effort enrichment."""
     if not key:
-        return None
+        return {}
     try:
-        return parse_formation(fetch_service_details(rid, key, base_url))
+        return formations_from_board(fetch_dep_board(origin_crs, dest_crs, key, base_url))
     except Exception as exc:  # network, HTTP, auth — never break the caller
-        log.warning("LDBSV lookup failed for %s: %s", rid, exc)
-        return None
+        log.warning("LDBSV board lookup failed for %s->%s: %s", origin_crs, dest_crs, exc)
+        return {}
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     import config  # noqa: E402  (bridge/ is on sys.path[0]; loads .env)
 
-    if len(sys.argv) < 2:
-        print("usage: python bridge/ldbsv.py <rid>")
+    if len(sys.argv) < 3:
+        print("usage: python bridge/ldbsv.py <originCRS> <destCRS>   (e.g. WAT FNH)")
         raise SystemExit(2)
-    rid = sys.argv[1]
+    origin, dest = sys.argv[1].upper(), sys.argv[2].upper()
     key = getattr(config, "LDBSV_KEY", "")
-    base_url = getattr(config, "LDBSV_BASE_URL", DEFAULT_BASE_URL)
+    base_url = getattr(config, "LDBSV_BASE_URL", "") or DEFAULT_BASE_URL
     if not key:
         print("No LDBSV_KEY set in bridge/.env")
         raise SystemExit(2)
 
-    details = fetch_service_details(rid, key, base_url)
-    print("=== formation ===")
-    print(json.dumps(details.get("formation"), indent=2))
-    print("=== locations[].length ===")
-    print([loc.get("length") for loc in details.get("locations") or []])
-    print("=== PARSED ===")
-    print(parse_formation(details))
+    when = datetime.now().strftime("%Y%m%dT%H%M%S")
+    url = "%s/api/%s/GetDepBoardWithDetails/%s/%s" % (base_url, _API_VERSION, origin, when)
+    resp = httpx.get(url, params={"filterCrs": dest, "filterType": "to", "numRows": 10},
+                     headers={"x-apikey": key, "Accept": "application/json"}, timeout=10.0)
+    print("GET", resp.url)
+    print("HTTP", resp.status_code, "  bytes:", len(resp.content))
+    if resp.status_code != 200:
+        print(resp.text[:1000])
+        raise SystemExit(1)
+
+    board = resp.json()
+    svcs = board.get("trainServices") or []
+    print("services:", len(svcs))
+    for s in svcs:
+        coaches = (s.get("formation") or {}).get("coaches") or []
+        print(" ", s.get("rid"), s.get("std"),
+              "length=", s.get("length"),
+              "coaches=", len(coaches),
+              [c.get("coachClass") for c in coaches],
+              "->", parse_service_formation(s))
