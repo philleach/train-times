@@ -7,9 +7,12 @@ _TOPIC_OUT = b"trains/WAT/FNH"   # outbound: Waterloo -> Farnham
 _TOPIC_RET = b"trains/FNH/WAT"   # return:   Farnham -> Waterloo
 _TOPIC_CALL_OUT = b"trains/WAT/FNH/calling"  # next outbound train's calling points
 _TOPIC_CALL_RET = b"trains/FNH/WAT/calling"  # next return train's calling points
+_TOPIC_ALERT_OUT = b"trains/WAT/FNH/alerts"  # outbound network disruption messages
+_TOPIC_ALERT_RET = b"trains/FNH/WAT/alerts"  # return network disruption messages
 _TOPIC_WC = b"lines/waterloo-city"
 _TOPIC_HB = b"trains/heartbeat"  # periodic liveness ping from the bridge
-_TOPICS = (_TOPIC_OUT, _TOPIC_RET, _TOPIC_CALL_OUT, _TOPIC_CALL_RET, _TOPIC_WC, _TOPIC_HB)
+_TOPICS = (_TOPIC_OUT, _TOPIC_RET, _TOPIC_CALL_OUT, _TOPIC_CALL_RET,
+           _TOPIC_ALERT_OUT, _TOPIC_ALERT_RET, _TOPIC_WC, _TOPIC_HB)
 
 # We only ever subscribe, never publish, so the broker would drop our idle
 # connection after ~1.5x keepalive. Ping well inside that window to stay alive.
@@ -23,6 +26,8 @@ _trains_out = []
 _trains_ret = []
 _calling_out = None
 _calling_ret = None
+_alerts_out = []
+_alerts_ret = []
 _wc_status = None
 _wc_reason = ""
 _last_msg_ms = None
@@ -30,7 +35,7 @@ _last_msg_ms = None
 
 def _on_message(topic, payload):
     global _trains_out, _trains_ret, _calling_out, _calling_ret
-    global _wc_status, _wc_reason, _last_msg_ms
+    global _alerts_out, _alerts_ret, _wc_status, _wc_reason, _last_msg_ms
     _last_msg_ms = time.ticks_ms()
     try:
         if topic == _TOPIC_OUT:
@@ -41,6 +46,10 @@ def _on_message(topic, payload):
             _calling_out = ujson.loads(payload)
         elif topic == _TOPIC_CALL_RET:
             _calling_ret = ujson.loads(payload)
+        elif topic == _TOPIC_ALERT_OUT:
+            _alerts_out = ujson.loads(payload)
+        elif topic == _TOPIC_ALERT_RET:
+            _alerts_ret = ujson.loads(payload)
         elif topic == _TOPIC_WC:
             doc = ujson.loads(payload)
             _wc_status = doc.get("status")
@@ -101,6 +110,10 @@ def get_trains(outbound=True):
 
 def get_calling(outbound=True):
     return _calling_out if outbound else _calling_ret
+
+
+def get_alerts(outbound=True):
+    return _alerts_out if outbound else _alerts_ret
 
 
 def get_wc_status():

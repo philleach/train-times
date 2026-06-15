@@ -126,7 +126,8 @@ def main():
             if _calling_view:
                 display.render_calling(mqtt.get_calling(_outbound), title, secs)
             else:
-                display.render(trains, title, mqtt.get_wc_status(), mqtt.get_wc_reason(), secs)
+                display.render(trains, title, mqtt.get_wc_status(), mqtt.get_wc_reason(),
+                               secs, mqtt.get_alerts(_outbound))
             _update_led(trains, stale)
         except Exception as e:
             print("loop error:", e)

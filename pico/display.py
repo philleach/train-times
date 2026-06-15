@@ -203,7 +203,7 @@ def _draw_next(train, muted, now_mins):
     display.text(">" + (eta_dest or "--:--"), 70, _NEXT_L2_Y, scale=_SCALE)
 
     display.set_pen(_GREY if muted else _status_colour(status))
-    _text_right(status, WIDTH - 4, _NEXT_L2_Y)
+    _text_right(("! " + status) if train.get("reason") else status, WIDTH - 4, _NEXT_L2_Y)
 
     display.set_pen(_GREY)
     display.line(0, _NEXT_LINE, WIDTH, _NEXT_LINE)
@@ -246,12 +246,48 @@ def _draw_compact(train, index, muted, now_mins):
     display.text(">" + (eta_dest or "--:--"), _C_ARR, y, scale=_SCALE)
 
     display.set_pen(_GREY if muted else _status_colour(format_status(train)))
-    _text_right(short, WIDTH - 4, y)
+    _text_right(("!" + short) if train.get("reason") else short, WIDTH - 4, y)
+
+
+# ---------------------------------------------------------- disruption banner
+
+_BANNER_Y = _COMPACT_START + 2 * _COMPACT_ROW_H   # below 2 compact rows (194)
+
+
+def _build_banner(trains, alerts):
+    """Combine network disruption messages with any per-train delay reasons."""
+    msgs = list(alerts or [])
+    for t in (trains or [])[:4]:
+        reason = t.get("reason")
+        if reason:
+            msgs.append("{} {}: {}".format(t.get("std", "--:--"), short_status(t), reason))
+    return msgs
+
+
+def _draw_banner(msgs, muted):
+    display.set_pen(_GREY)
+    display.line(0, _BANNER_Y, WIDTH, _BANNER_Y)
+    display.set_font(_FONT)
+    text = "    -    ".join(msgs)
+    pen = _GREY if muted else _AMBER
+    display.set_pen(pen)
+    y = _BANNER_Y + (HEIGHT - _BANNER_Y - _CHAR_H) // 2
+    msg_w = display.measure_text(text, scale=_SCALE)
+    if msg_w <= WIDTH - 2 * _C_STD:
+        display.text(text, _C_STD, y, scale=_SCALE)
+        return
+    text += "        "
+    msg_w = display.measure_text(text, scale=_SCALE)
+    offset = (time.ticks_ms() // 40) % msg_w
+    x = _C_STD - offset
+    while x < WIDTH:
+        display.text(text, x, y, scale=_SCALE)
+        x += msg_w
 
 
 # --------------------------------------------------------------- public
 
-def render(trains, title="WAT->FNH", wc_status=None, wc_reason="", stale_secs=None):
+def render(trains, title="WAT->FNH", wc_status=None, wc_reason="", stale_secs=None, alerts=None):
     stale = stale_secs is not None and stale_secs >= _STALE_SECS
     muted = stale  # grey everything out when the feed is stale
     now_mins = _now_mins()
@@ -269,8 +305,14 @@ def render(trains, title="WAT->FNH", wc_status=None, wc_reason="", stale_secs=No
         return
 
     _draw_next(trains[0], muted, now_mins)
-    for i, train in enumerate(trains[1:1 + _COMPACT_ROWS]):
+
+    # When there's disruption to show, give up one compact row for the banner.
+    banner = _build_banner(trains, alerts)
+    n_compact = 2 if banner else _COMPACT_ROWS
+    for i, train in enumerate(trains[1:1 + n_compact]):
         _draw_compact(train, i, muted, now_mins)
+    if banner:
+        _draw_banner(banner, muted)
 
     display.update()
 

@@ -70,6 +70,7 @@ class Direction:
         self.dest = dest          # destination tiploc
         self.topic = topic        # MQTT topic
         self.calling_topic = topic + "/calling"  # next train's calling points
+        self.alerts_topic = topic + "/alerts"    # network disruption messages
         self.origin_crs = origin_crs  # CRS codes for LDBSV board lookups
         self.dest_crs = dest_crs
         self.known_rids: set[str] = set()    # rids confirmed for this direction
@@ -81,6 +82,7 @@ class Direction:
         self.formation: dict[str, dict] = {}
         self.last_published: str = ""
         self.last_calling: str = ""
+        self.last_alerts: str = ""
 
     def _prune(self):
         now = _now_mins()
@@ -243,10 +245,33 @@ class Direction:
             self._cache_formation(rid, {**self.formation.get(rid, {}), **fields})
             log.info("[%s] %s LDBSV formation: %d cars", self.name, rid, fo["length"])
             changed = True
+
+        # Delay/cancel reasons: set for affected services, clear when recovered.
+        reasons = ldbsv.reasons_from_board(board, _REASON_MAP)
+        for rid in list(self.state):
+            new = reasons.get(rid)
+            if new != self.state[rid].get("reason"):
+                if new:
+                    self.state[rid]["reason"] = new
+                else:
+                    self.state[rid].pop("reason", None)
+                changed = True
+
         if changed:
             self.publish(mqtt_client)
 
         self._publish_calling(board, mqtt_client)
+        self._publish_alerts(board, mqtt_client)
+
+    def _publish_alerts(self, board: dict, mqtt_client: mqtt.Client):
+        """Publish network disruption messages (retained) for the banner."""
+        msgs = ldbsv.nrcc_messages_from_board(board)
+        payload = json.dumps(msgs)
+        if payload == self.last_alerts:
+            return
+        mqtt_client.publish(self.alerts_topic, payload, retain=True)
+        self.last_alerts = payload
+        log.info("[%s] Published %d disruption message(s)", self.name, len(msgs))
 
     def _publish_calling(self, board: dict, mqtt_client: mqtt.Client):
         """Publish the next train's calling points (retained) for the B-button
@@ -269,6 +294,7 @@ _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
 _HEARTBEAT_INTERVAL = 30   # publish a heartbeat this often so the Pico knows the feed is live
 _WC_EVERY_N_TICKS = 2      # poll TfL once every N heartbeats (~60s)
 _LDBSV_INTERVAL = 60       # how often to top up coach counts from LDBSV
+_REASON_MAP: dict = {}     # delay/cancel reason code -> text, loaded at startup
 
 
 def _fetch_wc_status() -> tuple[str, str] | None:
@@ -369,6 +395,10 @@ def run():
 
     mqtt_client = _make_mqtt()
     log.info("Connected to MQTT at %s:%s", config.MQTT_HOST, config.MQTT_PORT)
+
+    global _REASON_MAP
+    if config.LDBSV_KEY:
+        _REASON_MAP = ldbsv.fetch_reason_map(config.LDBSV_KEY, config.LDBSV_BASE_URL)
 
     directions = [
         Direction("WAT→FNH", WATRLMN, FARNHAM, config.MQTT_TOPIC, "WAT", "FNH"),

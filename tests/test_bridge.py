@@ -164,6 +164,46 @@ def test_ldbsv_publishes_calling_points(now_fixed, monkeypatch):
     assert doc["stops"][-1]["name"] == "Farnham"    # truncated at destination
 
 
+def test_ldbsv_publishes_disruption_alerts(now_fixed, monkeypatch):
+    d = _direction()
+    mq = FakeMQTT()
+    board = _board([])
+    board["nrccMessages"] = [
+        {"xhtmlMessage": "\nDelays between A and B. See <a href=\"x\">here</a>."}]
+    monkeypatch.setattr(br.config, "LDBSV_KEY", "k")
+    monkeypatch.setattr(br.ldbsv, "board", lambda *a, **k: board)
+    d.enrich_from_ldbsv(mq)
+
+    assert json.loads(_last_on(mq, d.alerts_topic)) == ["Delays between A and B. See here."]
+
+
+def test_ldbsv_attaches_delay_reason(now_fixed, monkeypatch):
+    d = _direction()
+    mq = FakeMQTT()
+    d.handle_schedules(_schedule_pport("r1"), mq)
+    board = _board([{"rid": "r1", "delayReason": {"Value": 123}}])
+    monkeypatch.setattr(br.config, "LDBSV_KEY", "k")
+    monkeypatch.setattr(br, "_REASON_MAP", {123: {"late": "signalling failure", "canc": ""}})
+    monkeypatch.setattr(br.ldbsv, "board", lambda *a, **k: board)
+    d.enrich_from_ldbsv(mq)
+
+    assert d.state["r1"]["reason"] == "signalling failure"
+    assert json.loads(_last_on(mq, d.topic))[0]["reason"] == "signalling failure"
+
+
+def test_ldbsv_clears_reason_when_recovered(now_fixed, monkeypatch):
+    d = _direction()
+    mq = FakeMQTT()
+    d.handle_schedules(_schedule_pport("r1"), mq)
+    d.state["r1"]["reason"] = "earlier reason"
+    monkeypatch.setattr(br.config, "LDBSV_KEY", "k")
+    monkeypatch.setattr(br, "_REASON_MAP", {123: {"late": "x", "canc": ""}})
+    monkeypatch.setattr(br.ldbsv, "board", lambda *a, **k: _board([{"rid": "r1"}]))
+    d.enrich_from_ldbsv(mq)
+
+    assert "reason" not in d.state["r1"]
+
+
 def test_cache_is_bounded(now_fixed):
     d = _direction()
     mq = FakeMQTT()

@@ -15,6 +15,7 @@ Run directly to inspect a board (key/base URL come from bridge/.env):
 """
 
 import logging
+import re
 import sys
 from datetime import datetime
 
@@ -134,6 +135,80 @@ def calling_for_rid(board_doc: dict, rid: str, dest_crs: str) -> list:
         if s.get("rid") == rid:
             return calling_points_from_service(s, dest_crs)
     return []
+
+
+# ----------------------------------------------------- disruption & reasons
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def nrcc_messages_from_board(board_doc: dict) -> list:
+    """Plain-text network disruption messages from a board (HTML stripped)."""
+    out = []
+    for m in (board_doc or {}).get("nrccMessages") or []:
+        text = " ".join(_TAG_RE.sub("", m.get("xhtmlMessage") or "").split())
+        if text:
+            out.append(text)
+    return out
+
+
+_REASON_PATHS = ("api/%s/GetReasonCodeList" % _API_VERSION,
+                 "api/ref/20211101/GetReasonCodeList")
+
+
+def fetch_reason_map(key: str, base_url: str = DEFAULT_BASE_URL) -> dict:
+    """code -> {late, canc} from GetReasonCodeList, or {} if unavailable."""
+    if not key:
+        return {}
+    headers = {"x-apikey": key, "Accept": "application/json"}
+    for path in _REASON_PATHS:
+        try:
+            resp = httpx.get("%s/%s" % (base_url, path), headers=headers, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.warning("LDBSV reason list %s: %s", path, exc)
+            continue
+        out = {}
+        for r in data or []:
+            code = r.get("code")
+            if code is None:
+                continue
+            out[int(code)] = {"late": r.get("lateReason") or "",
+                              "canc": r.get("cancReason") or ""}
+        if out:
+            log.info("LDBSV reason map: %d codes via %s", len(out), path)
+            return out
+    return {}
+
+
+def reason_for_service(service: dict, reason_map: dict) -> str | None:
+    """Human-readable delay/cancel reason for a board service, or None."""
+    if not reason_map:
+        return None
+    if service.get("isCancelled"):
+        rc, kind = service.get("cancelReason"), "canc"
+    else:
+        rc, kind = service.get("delayReason"), "late"
+    if not rc:
+        return None
+    try:
+        code = int(rc.get("Value"))
+    except (TypeError, ValueError):
+        return None
+    entry = reason_map.get(code)
+    return (entry.get(kind) or None) if entry else None
+
+
+def reasons_from_board(board_doc: dict, reason_map: dict) -> dict:
+    """rid -> reason text for services on the board that have one."""
+    out = {}
+    for s in (board_doc or {}).get("trainServices") or []:
+        rid = s.get("rid")
+        text = reason_for_service(s, reason_map) if rid else None
+        if text:
+            out[rid] = text
+    return out
 
 
 if __name__ == "__main__":
