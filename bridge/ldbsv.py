@@ -123,6 +123,7 @@ if __name__ == "__main__":
     board = resp.json()
     svcs = board.get("trainServices") or []
     print("services:", len(svcs))
+    print("board nrccMessages:", board.get("nrccMessages"))
     for s in svcs:
         coaches = (s.get("formation") or {}).get("coaches") or []
         print(" ", s.get("rid"), s.get("std"),
@@ -130,3 +131,11 @@ if __name__ == "__main__":
               "coaches=", len(coaches),
               [c.get("coachClass") for c in coaches],
               "->", parse_service_formation(s))
+
+    # `dump` as a 3rd arg prints the first service in full so we can see which
+    # rich fields (loading, reasons, alerts, calling points) are actually
+    # populated for these services.
+    if len(sys.argv) > 3 and sys.argv[3] == "dump" and svcs:
+        import json
+        print("\n=== first service (full) ===")
+        print(json.dumps(svcs[0], indent=2))
