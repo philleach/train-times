@@ -19,6 +19,13 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "8883"))
 MQTT_TLS = os.getenv("MQTT_TLS", "1") not in ("0", "false", "False", "")
 MQTT_USER = os.environ["MQTT_USER"]
 MQTT_PASSWORD = os.environ["MQTT_PASSWORD"]
+
+# OpenLDBSVWS (Live Departure Boards, Staff Version) REST API — used to fill in
+# coach formation when Darwin's Push Port doesn't carry it. Optional: leave
+# LDBSV_KEY unset to disable the lookup.
+LDBSV_KEY = os.getenv("LDBSV_KEY", "")
+LDBSV_BASE_URL = os.getenv("LDBSV_BASE_URL", "https://realtime.nationalrail.co.uk/LDBSVWS")
+
 MQTT_TOPIC = "trains/WAT/FNH"
 MQTT_TOPIC_RETURN = "trains/FNH/WAT"
 MQTT_WC_TOPIC = "lines/waterloo-city"
