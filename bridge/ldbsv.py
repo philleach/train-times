@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = ("https://api1.raildata.org.uk/"
                     "1010-live-arrival-and-departure-boards---staff-version1_0/LDBSVWS")
 _API_VERSION = "20220120"
+# The dep-only board (GetDepBoardWithDetails) and GetServiceDetailsByRID are not
+# routed on this RDM product (gateway returns RouteFailed); the arr+dep board is.
+_OP = "GetArrDepBoardWithDetails"
 
 # Waterloo / Farnham CRS codes (the bridge works in tiplocs; these are the
 # public station codes LDBSV expects).
@@ -69,8 +72,8 @@ def fetch_dep_board(origin_crs: str, dest_crs: str, key: str,
                     base_url: str = DEFAULT_BASE_URL, when: str | None = None,
                     timeout: float = 10.0) -> dict:
     when = when or datetime.now().strftime("%Y%m%dT%H%M%S")
-    url = "%s/api/%s/GetDepBoardWithDetails/%s/%s" % (
-        base_url, _API_VERSION, origin_crs.upper(), when)
+    url = "%s/api/%s/%s/%s/%s" % (
+        base_url, _API_VERSION, _OP, origin_crs.upper(), when)
     params = {"filterCrs": dest_crs.upper(), "filterType": "to", "numRows": 10}
     resp = httpx.get(url, params=params, timeout=timeout,
                      headers={"x-apikey": key, "Accept": "application/json"})
@@ -108,7 +111,7 @@ if __name__ == "__main__":
         raise SystemExit(2)
 
     when = datetime.now().strftime("%Y%m%dT%H%M%S")
-    url = "%s/api/%s/GetDepBoardWithDetails/%s/%s" % (base_url, _API_VERSION, origin, when)
+    url = "%s/api/%s/%s/%s/%s" % (base_url, _API_VERSION, _OP, origin, when)
     resp = httpx.get(url, params={"filterCrs": dest, "filterType": "to", "numRows": 10},
                      headers={"x-apikey": key, "Accept": "application/json"}, timeout=10.0)
     print("GET", resp.url)
