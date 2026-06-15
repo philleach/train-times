@@ -23,6 +23,7 @@ from confluent_kafka import Consumer, KafkaError, TopicPartition
 
 import config
 from darwin import (
+    _SF_KEYS,
     FARNHAM,
     WATRLMN,
     extract_dest_eta,
@@ -33,14 +34,18 @@ from darwin import (
     parse_kafka_value,
 )
 
+DEBUG_RAW = os.environ.get("DEBUG_RAW", "").lower() in ("1", "true")
+
+# Formations stream for the whole network; cap the per-direction cache of
+# not-yet-confirmed formations so memory can't grow unbounded over a long run.
+_FORMATION_CACHE_MAX = 2000
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if DEBUG_RAW else logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
-
-DEBUG_RAW = os.environ.get("DEBUG_RAW", "").lower() in ("1", "true")
 
 def _now_mins() -> int:
     t = time.localtime()
@@ -65,7 +70,10 @@ class Direction:
         self.known_rids: set[str] = set()    # rids confirmed for this direction
         self.pending: dict[str, dict] = {}   # origin departures awaiting dest confirmation
         self.state: dict[str, dict] = {}     # rid -> train dict
-        self.formation: dict[str, dict] = {}  # rid -> {length, first}; may arrive before the rid is known
+        # rid -> {length, first}. SF messages can arrive before we know the rid
+        # (or its schedule), so we cache every formation and apply it when the
+        # service is confirmed. Bounded by _FORMATION_CACHE_MAX (see _cache_formation).
+        self.formation: dict[str, dict] = {}
         self.last_published: str = ""
 
     def _prune(self):
@@ -88,6 +96,24 @@ class Direction:
     def _upcoming(self) -> list:
         self._prune()
         return sorted(self.state.values(), key=lambda t: t.get("std", "99:99"))[:6]
+
+    def _cache_formation(self, rid: str, fields: dict):
+        """Remember a formation, evicting oldest entries to stay bounded.
+
+        Re-inserting moves the rid to the freshest position; entries for
+        services we're actively tracking are kept (their data also lives in
+        self.state, so evicting them would be harmless, but skipping them
+        keeps the cache useful)."""
+        self.formation.pop(rid, None)
+        self.formation[rid] = fields
+        if len(self.formation) <= _FORMATION_CACHE_MAX:
+            return
+        for old in list(self.formation):
+            if old in self.state:
+                continue
+            del self.formation[old]
+            if len(self.formation) <= _FORMATION_CACHE_MAX:
+                break
 
     def publish(self, mqtt_client: mqtt.Client):
         trains = self._upcoming()
@@ -165,13 +191,15 @@ class Direction:
     def handle_formation(self, pport: dict, mqtt_client: mqtt.Client):
         fo = extract_formation(pport)
         if not fo:
+            if DEBUG_RAW and any(k in pport.get("uR", {}) for k in _SF_KEYS):
+                log.debug("[%s] SF message present but not parsed: %s",
+                          self.name, json.dumps(pport.get("uR", {}))[:300])
             return
         rid = fo["rid"]
-        # only track formations for services we're following (bounds memory)
-        if rid not in self.known_rids and rid not in self.pending and rid not in self.state:
-            return
         fields = {"length": fo["length"], "first": fo["first"]}
-        self.formation[rid] = fields
+        # Cache every formation — it may arrive before we know the rid; the
+        # schedule/TS that confirms the service later picks it up from here.
+        self._cache_formation(rid, fields)
         if rid in self.state and {k: self.state[rid].get(k) for k in fields} != fields:
             self.state[rid].update(fields)
             log.info("[%s] %s formation: %d cars%s", self.name, rid,
@@ -260,7 +288,8 @@ def _seek_to_start_of_day(consumer: Consumer, topic: str):
 
 def _make_mqtt() -> mqtt.Client:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.tls_set()
+    if config.MQTT_TLS:
+        client.tls_set()
     client.username_pw_set(config.MQTT_USER, config.MQTT_PASSWORD)
     client.reconnect_delay_set(min_delay=5, max_delay=60)
     client.connect(config.MQTT_HOST, config.MQTT_PORT, keepalive=60)

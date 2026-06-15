@@ -62,7 +62,7 @@ def _text_right(s, x_right, y, scale=_SCALE):
 def _status_colour(status):
     if status == "CANC":
         return _RED
-    if status == "ON TIME":
+    if status == "ON TIME" or status == "EARLY":
         return _GREEN
     return _AMBER
 
