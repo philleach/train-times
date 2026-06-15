@@ -14,6 +14,9 @@ KAFKA_API_SECRET = os.environ["KAFKA_API_SECRET"]
 
 MQTT_HOST = os.environ["MQTT_HOST"]
 MQTT_PORT = int(os.getenv("MQTT_PORT", "8883"))
+# TLS to the broker. Off when publishing to a local plaintext Mosquitto on
+# loopback (Tailscale Funnel terminates the public TLS); on for direct cloud brokers.
+MQTT_TLS = os.getenv("MQTT_TLS", "1") not in ("0", "false", "False", "")
 MQTT_USER = os.environ["MQTT_USER"]
 MQTT_PASSWORD = os.environ["MQTT_PASSWORD"]
 MQTT_TOPIC = "trains/WAT/FNH"
