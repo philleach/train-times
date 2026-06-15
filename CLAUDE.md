@@ -65,13 +65,22 @@ DEBUG_RAW=1 uv run python bridge/bridge.py
 - **Pport structure:** `{ts, version, uR: {updateOrigin, TS?: {rid, uid, ssd, Location: [{tpl, ptd, dep: {et}, arr: {et}, plat}]}}}`
 - **Tiplocs:** Waterloo = `WATLOO`, Farnham = `FARNHAM`
 - `et` = estimated time (future), `at` = actual time (past)
-- **scheduleFormations (SF):** `uR.scheduleFormations: {rid, formation: {fid, coaches: {coach: [{coachNumber, coachClass}]}}}` — coach makeup; we extract `length` (coach count) and `first` (First-class count). Element text content uses the `""` key in the JSON feed.
+- **scheduleFormations (SF):** `uR.scheduleFormations: {rid, formation: {fid, coaches: {coach: [{coachNumber, coachClass}]}}}` — coach makeup; we extract `length` (coach count) and `first` (First-class count). Element text content uses the `""` key in the JSON feed. **In practice Darwin rarely sends SF for the WAT↔FNH services we track** — see LDBSV fallback below.
+
+## LDBSV (coach-count fallback)
+
+Because Darwin's Push Port usually lacks `scheduleFormations` for our services, the bridge fills coach counts from **OpenLDBSVWS** — the Rail Data Marketplace product *"Live Arrival & Departure Boards - Staff Version"* (`bridge/ldbsv.py`).
+
+- **REST/JSON with `x-apikey` header** (not the legacy SOAP service). Key in `bridge/.env` as `LDBSV_KEY`; optional — disabled if unset.
+- **Gateway base URL** (default in `config.py`): `https://api1.raildata.org.uk/1010-live-arrival-and-departure-boards---staff-version1_0/LDBSVWS`. Hitting upstream `realtime.nationalrail.co.uk` directly gives 401.
+- **Only `GetArrDepBoardWithDetails` routes** on this product — `GetServiceDetailsByRID` and `GetDepBoardWithDetails` return Apigee `RouteFailed`. So we fetch the board (origin CRS, `filterCrs`=dest, `filterType=to`) and read `formation` per service, keyed by RID. DateTime path param is `yyyyMMddTHHmmss`.
+- Polled every 60s on the bridge's **main loop** (state stays single-threaded). `enrich_from_ldbsv` only fills `length` for tracked rids Darwin didn't cover (Darwin SF wins, and is the only source of `first`). The board confirms `length` only **near departure**, so typically just the next train (or two) gets a count.
 
 ## MQTT
 
 - Train topics: `trains/WAT/FNH` (outbound) and `trains/FNH/WAT` (return); the Pico's A button toggles which is shown
 - Payload: JSON array of up to 6 trains, sorted by `std`
-- Schema: `[{rid, std, etd, platform, cancelled, eta_dest, length?, first?}, ...]` (`eta_dest` = predicted arrival at the destination; `length`/`first` = coach count / First-class count from scheduleFormation, when available)
+- Schema: `[{rid, std, etd, platform, cancelled, eta_dest, length?, first?}, ...]` (`eta_dest` = predicted arrival at the destination; `length` = coach count from Darwin SF or the LDBSV fallback; `first` = First-class count, Darwin SF only, when available)
 - W&C line topic: `lines/waterloo-city`, payload `{status, reason}` (from the TfL API, polled every 60s by the bridge)
 - All published with `retain=True` so the Pico gets current state on connect
 

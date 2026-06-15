@@ -65,6 +65,17 @@ MQTT_USER=your-hivemq-username
 MQTT_PASSWORD=your-hivemq-password
 ```
 
+### Coach counts (LDBSV — optional)
+
+Darwin's Push Port rarely carries coach formation for these services, so the bridge optionally fills the car count from the Rail Data Marketplace product **"Live Arrival & Departure Boards - Staff Version"** (OpenLDBSVWS). Subscribe on the [Rail Data Marketplace](https://raildata.org.uk/), then add your API key:
+
+```
+LDBSV_KEY=your-rdm-api-key
+# LDBSV_BASE_URL defaults to the product's RDM gateway; override only if it differs
+```
+
+Leave `LDBSV_KEY` unset to disable the lookup. The board only confirms formation close to departure, so usually just the next train (or two) shows a coach count.
+
 ### Run as a systemd service
 
 ```ini
