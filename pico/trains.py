@@ -13,6 +13,8 @@ def format_status(train: dict) -> str:
         mins = _delay_mins(std, etd)
         if mins > 0:
             return f"+{mins}m"
+        if mins < 0:
+            return "EARLY"
     return etd or "?"
 
 
@@ -21,7 +23,13 @@ def _delay_mins(std: str, etd: str) -> int:
         sh, sm = int(std[:2]), int(std[3:5])
         eh, em = int(etd[:2]), int(etd[3:5])
         diff = (eh * 60 + em) - (sh * 60 + sm)
-        return diff if diff >= 0 else diff + 1440
+        # Wrap only genuine midnight crossings; a small negative diff means the
+        # train is running early, not ~24h late.
+        if diff > 720:
+            diff -= 1440
+        elif diff < -720:
+            diff += 1440
+        return diff
     except Exception:
         return 0
 
@@ -41,7 +49,7 @@ def severity(train: dict) -> int:
     status = format_status(train)
     if status == "CANC":
         return 2
-    if status == "ON TIME":
+    if status == "ON TIME" or status == "EARLY":
         return 0
     return 1
 

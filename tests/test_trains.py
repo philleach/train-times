@@ -14,6 +14,10 @@ class TestDelayMins:
         # Train due 23:58, now expected 00:03
         assert _delay_mins("23:58", "00:03") == 5
 
+    def test_running_one_minute_early(self):
+        # etd before std should read as -1, not +1439 (no spurious midnight wrap)
+        assert _delay_mins("14:32", "14:31") == -1
+
     def test_invalid_input(self):
         assert _delay_mins("bad", "data") == 0
 
@@ -33,6 +37,9 @@ class TestFormatStatus:
 
     def test_late_by_five(self):
         assert format_status({"cancelled": False, "etd": "14:37", "std": "14:32"}) == "+5m"
+
+    def test_running_early(self):
+        assert format_status({"cancelled": False, "etd": "14:31", "std": "14:32"}) == "EARLY"
 
     def test_early_or_zero_delay(self):
         # etd equals std — treat as on time (delay = 0, falls through to returning etd)
