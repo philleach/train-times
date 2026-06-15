@@ -22,6 +22,7 @@ import paho.mqtt.client as mqtt
 from confluent_kafka import Consumer, KafkaError, TopicPartition
 
 import config
+import ldbsv
 from darwin import (
     _SF_KEYS,
     FARNHAM,
@@ -62,11 +63,14 @@ def _hhmm_to_mins(hhmm: str) -> int:
 class Direction:
     """A single travel direction (e.g. WAT→FNH) with its own state and topic."""
 
-    def __init__(self, name: str, origin: str, dest: str, topic: str):
+    def __init__(self, name: str, origin: str, dest: str, topic: str,
+                 origin_crs: str, dest_crs: str):
         self.name = name          # human label, e.g. "WAT→FNH"
         self.origin = origin      # origin tiploc
         self.dest = dest          # destination tiploc
         self.topic = topic        # MQTT topic
+        self.origin_crs = origin_crs  # CRS codes for LDBSV board lookups
+        self.dest_crs = dest_crs
         self.known_rids: set[str] = set()    # rids confirmed for this direction
         self.pending: dict[str, dict] = {}   # origin departures awaiting dest confirmation
         self.state: dict[str, dict] = {}     # rid -> train dict
@@ -213,10 +217,34 @@ class Direction:
             log.debug("[%s] cached formation rid=%s (%s) %d cars",
                       self.name, rid, where, fo["length"])
 
+    def enrich_from_ldbsv(self, mqtt_client: mqtt.Client):
+        """Fill coach counts from LDBSV for tracked services Darwin hasn't given
+        a formation. LDBSV only confirms a length close to departure, so this is
+        polled periodically. No-op without a key; never raises."""
+        if not config.LDBSV_KEY:
+            return
+        forms = ldbsv.formations(self.origin_crs, self.dest_crs,
+                                 config.LDBSV_KEY, config.LDBSV_BASE_URL)
+        changed = False
+        for rid, fo in forms.items():
+            t = self.state.get(rid)
+            if not t or t.get("length"):
+                continue  # not tracked, or Darwin already supplied a length
+            fields = {"length": fo["length"]}
+            if fo.get("first"):  # board usually lacks per-coach class
+                fields["first"] = fo["first"]
+            t.update(fields)
+            self._cache_formation(rid, {**self.formation.get(rid, {}), **fields})
+            log.info("[%s] %s LDBSV formation: %d cars", self.name, rid, fo["length"])
+            changed = True
+        if changed:
+            self.publish(mqtt_client)
+
 
 _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
 _HEARTBEAT_INTERVAL = 30   # publish a heartbeat this often so the Pico knows the feed is live
 _WC_EVERY_N_TICKS = 2      # poll TfL once every N heartbeats (~60s)
+_LDBSV_INTERVAL = 60       # how often to top up coach counts from LDBSV
 
 
 def _fetch_wc_status() -> tuple[str, str] | None:
@@ -319,8 +347,8 @@ def run():
     log.info("Connected to MQTT at %s:%s", config.MQTT_HOST, config.MQTT_PORT)
 
     directions = [
-        Direction("WAT→FNH", WATRLMN, FARNHAM, config.MQTT_TOPIC),
-        Direction("FNH→WAT", FARNHAM, WATRLMN, config.MQTT_TOPIC_RETURN),
+        Direction("WAT→FNH", WATRLMN, FARNHAM, config.MQTT_TOPIC, "WAT", "FNH"),
+        Direction("FNH→WAT", FARNHAM, WATRLMN, config.MQTT_TOPIC_RETURN, "FNH", "WAT"),
     ]
 
     # Publish W&C status immediately, then poll every 60s
@@ -333,9 +361,20 @@ def run():
     poller_thread = threading.Thread(target=_background_poller, args=(mqtt_client, stop_event), daemon=True)
     poller_thread.start()
 
+    last_ldbsv = 0.0
     try:
         while True:
             msg = consumer.poll(timeout=1.0)
+
+            # Periodically top up coach counts from LDBSV for services Darwin
+            # didn't give a formation. Done on this thread so all state stays
+            # single-threaded; the HTTP call has a short timeout.
+            now_t = time.monotonic()
+            if now_t - last_ldbsv >= _LDBSV_INTERVAL:
+                last_ldbsv = now_t
+                for direction in directions:
+                    direction.enrich_from_ldbsv(mqtt_client)
+
             if msg is None:
                 continue
             if msg.error():
