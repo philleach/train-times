@@ -35,15 +35,23 @@ def _init_wifi():
     return wlan
 
 
+def _networks():
+    """Primary network first, then any optional fallbacks from config."""
+    nets = [(config.WIFI_SSID, config.WIFI_PASSWORD)]
+    nets += list(getattr(config, "WIFI_FALLBACKS", []))
+    return nets
+
+
 def _ensure_connected(wlan):
     if wlan.isconnected():
         return True
-    display.show_status("Connecting WiFi...")
-    wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
-    for _ in range(20):
-        if wlan.isconnected():
-            return True
-        time.sleep(1)
+    for ssid, password in _networks():
+        display.show_status("WiFi: " + ssid)
+        wlan.connect(ssid, password)
+        for _ in range(15):
+            if wlan.isconnected():
+                return True
+            time.sleep(1)
     return False
 
 
