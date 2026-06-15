@@ -114,7 +114,7 @@ MQTT_USER     = "your-mosquitto-username"
 MQTT_PASSWORD = "your-mosquitto-password"
 ```
 
-4. The Pico boots `main.py` automatically — it connects to WiFi, sets the time via NTP, subscribes to MQTT, and starts rendering departures. The **A button** toggles between the outbound (WAT→FNH) and return (FNH→WAT) directions.
+4. The Pico boots `main.py` automatically — it connects to WiFi, sets the time via NTP, subscribes to MQTT, and starts rendering departures. Buttons: **A** toggles direction (WAT→FNH / FNH→WAT), **B** toggles the departures ↔ calling-points view, **X/Y** adjust brightness.
 
 ## Desktop test tool (RTT API)
 

@@ -87,6 +87,14 @@ def test_formation_after_schedule_still_applied(now_fixed):
     assert json.loads(mq.published[-1][1])[0]["length"] == 4
 
 
+def _last_on(mq, topic):
+    return next(p for (t, p, r) in reversed(mq.published) if t == topic)
+
+
+def _board(services):
+    return {"trainServices": services}
+
+
 def test_ldbsv_fills_missing_length(now_fixed, monkeypatch):
     d = _direction()
     mq = FakeMQTT()
@@ -94,13 +102,13 @@ def test_ldbsv_fills_missing_length(now_fixed, monkeypatch):
     assert "length" not in d.state["r1"]
 
     monkeypatch.setattr(br.config, "LDBSV_KEY", "k")
-    monkeypatch.setattr(br.ldbsv, "formations",
-                        lambda *a, **k: {"r1": {"length": 8, "first": 0},
-                                         "other": {"length": 4}})
+    monkeypatch.setattr(br.ldbsv, "board",
+                        lambda *a, **k: _board([{"rid": "r1", "length": 8},
+                                                {"rid": "other", "length": 4}]))
     d.enrich_from_ldbsv(mq)
 
     assert d.state["r1"]["length"] == 8
-    assert json.loads(mq.published[-1][1])[0]["length"] == 8
+    assert json.loads(_last_on(mq, d.topic))[0]["length"] == 8
 
 
 def test_ldbsv_does_not_override_darwin_formation(now_fixed, monkeypatch):
@@ -110,8 +118,8 @@ def test_ldbsv_does_not_override_darwin_formation(now_fixed, monkeypatch):
     d.handle_formation(_sf_pport("r1", _coaches(4, first=1)), mq)  # Darwin: 4 cars
 
     monkeypatch.setattr(br.config, "LDBSV_KEY", "k")
-    monkeypatch.setattr(br.ldbsv, "formations",
-                        lambda *a, **k: {"r1": {"length": 8, "first": 0}})
+    monkeypatch.setattr(br.ldbsv, "board",
+                        lambda *a, **k: _board([{"rid": "r1", "length": 8}]))
     d.enrich_from_ldbsv(mq)
 
     assert d.state["r1"]["length"] == 4   # Darwin wins
@@ -124,9 +132,36 @@ def test_ldbsv_disabled_without_key(now_fixed, monkeypatch):
     d.handle_schedules(_schedule_pport("r1"), mq)
     monkeypatch.setattr(br.config, "LDBSV_KEY", "")
     called = []
-    monkeypatch.setattr(br.ldbsv, "formations", lambda *a, **k: called.append(1) or {})
+    monkeypatch.setattr(br.ldbsv, "board", lambda *a, **k: called.append(1) or None)
     d.enrich_from_ldbsv(mq)
     assert not called  # no lookup attempted
+
+
+def test_ldbsv_publishes_calling_points(now_fixed, monkeypatch):
+    d = _direction()
+    mq = FakeMQTT()
+    d.handle_schedules(_schedule_pport("r1"), mq)  # next train
+
+    board = _board([{"rid": "r1", "subsequentLocations": [
+        {"crs": "CLJ", "locationName": "Clapham Junction",
+         "eta": "2026-06-15T14:40:00", "platform": "9"},
+        {"crs": None, "isPass": True, "locationName": "a junction"},
+        {"crs": "WOK", "locationName": "Woking", "eta": "2026-06-15T15:05:00",
+         "platform": "5", "platformIsHidden": True},
+        {"crs": "FNH", "locationName": "Farnham", "eta": "2026-06-15T15:22:00"},
+        {"crs": "AON", "locationName": "Alton", "eta": "2026-06-15T15:39:00"},
+    ]}])
+    monkeypatch.setattr(br.config, "LDBSV_KEY", "k")
+    monkeypatch.setattr(br.ldbsv, "board", lambda *a, **k: board)
+    d.enrich_from_ldbsv(mq)
+
+    doc = json.loads(_last_on(mq, d.calling_topic))
+    assert doc["rid"] == "r1"
+    assert [s["name"] for s in doc["stops"]] == ["Clapham Junction", "Woking", "Farnham"]
+    assert doc["stops"][0]["time"] == "14:40"
+    assert doc["stops"][0]["platform"] == "9"      # shown (not hidden)
+    assert "platform" not in doc["stops"][1]        # Woking platform hidden
+    assert doc["stops"][-1]["name"] == "Farnham"    # truncated at destination
 
 
 def test_cache_is_bounded(now_fixed):

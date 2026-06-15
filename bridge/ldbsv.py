@@ -81,19 +81,59 @@ def fetch_dep_board(origin_crs: str, dest_crs: str, key: str,
     return resp.json()
 
 
+def board(origin_crs: str, dest_crs: str, key: str,
+          base_url: str = DEFAULT_BASE_URL) -> dict | None:
+    """Fetch the arr+dep board for a direction, or None on any failure.
+
+    Never raises so callers can treat LDBSV as best-effort enrichment."""
+    if not key:
+        return None
+    try:
+        return fetch_dep_board(origin_crs, dest_crs, key, base_url)
+    except Exception as exc:  # network, HTTP, auth
+        log.warning("LDBSV board lookup failed for %s->%s: %s", origin_crs, dest_crs, exc)
+        return None
+
+
 def formations(origin_crs: str, dest_crs: str, key: str,
                base_url: str = DEFAULT_BASE_URL) -> dict:
-    """rid -> {length, first} for upcoming origin->dest services, or {}.
+    """rid -> {length, first} for upcoming origin->dest services, or {}."""
+    b = board(origin_crs, dest_crs, key, base_url)
+    return formations_from_board(b) if b else {}
 
-    Never raises — returns {} on any failure so callers can treat LDBSV as a
-    best-effort enrichment."""
-    if not key:
-        return {}
-    try:
-        return formations_from_board(fetch_dep_board(origin_crs, dest_crs, key, base_url))
-    except Exception as exc:  # network, HTTP, auth — never break the caller
-        log.warning("LDBSV board lookup failed for %s->%s: %s", origin_crs, dest_crs, exc)
-        return {}
+
+def _hhmm(iso: str | None) -> str | None:
+    """'2026-06-15T20:30:00' -> '20:30'."""
+    return iso[11:16] if iso and len(iso) >= 16 else None
+
+
+def calling_points_from_service(service: dict, dest_crs: str) -> list:
+    """Public calling points for a service, up to and including dest_crs.
+
+    Each stop: {name, time, platform?}. Skips passing points and junctions
+    (no CRS / isPass), and stops once the destination is reached."""
+    dest_crs = dest_crs.upper()
+    out = []
+    for loc in service.get("subsequentLocations") or []:
+        crs = loc.get("crs")
+        if not crs or loc.get("isPass"):
+            continue
+        stop = {"name": loc.get("locationName") or crs,
+                "time": _hhmm(loc.get("eta") or loc.get("etd") or loc.get("std"))}
+        if loc.get("platform") and not loc.get("platformIsHidden"):
+            stop["platform"] = str(loc["platform"])
+        out.append(stop)
+        if crs.upper() == dest_crs:
+            break
+    return out
+
+
+def calling_for_rid(board_doc: dict, rid: str, dest_crs: str) -> list:
+    """Calling points for one rid on a board, or [] if not present."""
+    for s in (board_doc or {}).get("trainServices") or []:
+        if s.get("rid") == rid:
+            return calling_points_from_service(s, dest_crs)
+    return []
 
 
 if __name__ == "__main__":

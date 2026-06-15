@@ -275,6 +275,53 @@ def render(trains, title="WAT->FNH", wc_status=None, wc_reason="", stale_secs=No
     display.update()
 
 
+def render_calling(calling, title="WAT->FNH", stale_secs=None):
+    """Calling-points screen (B button): the next train's stops with times."""
+    stale = stale_secs is not None and stale_secs >= _STALE_SECS
+    display.set_pen(_BG)
+    display.clear()
+    display.set_font(_FONT)
+
+    std = (calling or {}).get("std") or "--:--"
+    dest = title.split("->")[-1]
+    display.set_pen(_GREY if stale else _TEXT)
+    display.text("{} calls -> {}".format(std, dest), _C_STD, _HEADER_Y, scale=_SCALE)
+    if stale and _blink():
+        display.set_pen(_RED)
+        display.circle(WIDTH - 8, _HEADER_Y + 8, 4)
+    display.set_pen(_GREY)
+    display.line(0, _HEADER_LINE, WIDTH, _HEADER_LINE)
+
+    stops = (calling or {}).get("stops") or []
+    if not stops:
+        display.set_pen(_GREY)
+        display.text("No calling points", _C_STD, _HEADER_LINE + 12, scale=_SCALE)
+        display.update()
+        return
+
+    # Fit the stops into the area below the header (alternating row shading).
+    top = _HEADER_LINE + 2
+    row_h = max(_CHAR_H + 4, (HEIGHT - top) // min(len(stops), 8))
+    muted = stale
+    for i, stop in enumerate(stops[:8]):
+        row_y = top + i * row_h
+        if i % 2 == 1:
+            display.set_pen(_BAND)
+            display.rectangle(0, row_y, WIDTH, row_h)
+        y = row_y + (row_h - _CHAR_H) // 2
+        display.set_pen(_GREY if muted else _TEXT)
+        name = stop.get("name") or "?"
+        display.text(name[:16], _C_STD, y, scale=_SCALE)
+        plat = stop.get("platform")
+        if plat:
+            display.set_pen(_GREY)
+            _text_right("p" + str(plat), WIDTH - 64, y)
+        display.set_pen(_GREY if muted else _TEXT)
+        _text_right(stop.get("time") or "--:--", WIDTH - 4, y)
+
+    display.update()
+
+
 def show_status(message):
     display.set_pen(_BG)
     display.clear()

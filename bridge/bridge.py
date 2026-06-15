@@ -69,6 +69,7 @@ class Direction:
         self.origin = origin      # origin tiploc
         self.dest = dest          # destination tiploc
         self.topic = topic        # MQTT topic
+        self.calling_topic = topic + "/calling"  # next train's calling points
         self.origin_crs = origin_crs  # CRS codes for LDBSV board lookups
         self.dest_crs = dest_crs
         self.known_rids: set[str] = set()    # rids confirmed for this direction
@@ -79,6 +80,7 @@ class Direction:
         # service is confirmed. Bounded by _FORMATION_CACHE_MAX (see _cache_formation).
         self.formation: dict[str, dict] = {}
         self.last_published: str = ""
+        self.last_calling: str = ""
 
     def _prune(self):
         now = _now_mins()
@@ -218,15 +220,19 @@ class Direction:
                       self.name, rid, where, fo["length"])
 
     def enrich_from_ldbsv(self, mqtt_client: mqtt.Client):
-        """Fill coach counts from LDBSV for tracked services Darwin hasn't given
-        a formation. LDBSV only confirms a length close to departure, so this is
-        polled periodically. No-op without a key; never raises."""
+        """From one LDBSV board fetch: (1) fill coach counts for tracked services
+        Darwin hasn't given a formation, and (2) publish the next train's calling
+        points. LDBSV confirms formation only near departure, so this is polled
+        periodically. No-op without a key; never raises."""
         if not config.LDBSV_KEY:
             return
-        forms = ldbsv.formations(self.origin_crs, self.dest_crs,
-                                 config.LDBSV_KEY, config.LDBSV_BASE_URL)
+        board = ldbsv.board(self.origin_crs, self.dest_crs,
+                            config.LDBSV_KEY, config.LDBSV_BASE_URL)
+        if not board:
+            return
+
         changed = False
-        for rid, fo in forms.items():
+        for rid, fo in ldbsv.formations_from_board(board).items():
             t = self.state.get(rid)
             if not t or t.get("length"):
                 continue  # not tracked, or Darwin already supplied a length
@@ -239,6 +245,24 @@ class Direction:
             changed = True
         if changed:
             self.publish(mqtt_client)
+
+        self._publish_calling(board, mqtt_client)
+
+    def _publish_calling(self, board: dict, mqtt_client: mqtt.Client):
+        """Publish the next train's calling points (retained) for the B-button
+        view. Deduped so unchanged times don't republish."""
+        trains = self._upcoming()
+        if not trains:
+            return
+        nxt = trains[0]
+        stops = ldbsv.calling_for_rid(board, nxt["rid"], self.dest_crs)
+        payload = json.dumps({"rid": nxt["rid"], "std": nxt.get("std"), "stops": stops})
+        if payload == self.last_calling:
+            return
+        mqtt_client.publish(self.calling_topic, payload, retain=True)
+        self.last_calling = payload
+        log.info("[%s] Published calling points for %s (%d stops)",
+                 self.name, nxt["rid"], len(stops))
 
 
 _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"

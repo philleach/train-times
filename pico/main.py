@@ -13,7 +13,7 @@ from trains import severity
 # Pico Display Pack 2.8": onboard RGB LED + 4 buttons
 _led = RGBLED(6, 7, 8)
 _button_a = Button(12)   # toggle direction (WAT->FNH / FNH->WAT)
-_button_b = Button(13)   # resume auto brightness
+_button_b = Button(13)   # toggle view (departures / calling points)
 _button_x = Button(14)   # brighter
 _button_y = Button(15)   # dimmer
 
@@ -24,6 +24,8 @@ _LED_BY_SEVERITY = ((0, 80, 30), (90, 45, 0), (90, 0, 0))  # green / amber / red
 _manual_brightness = None
 # Direction: True = outbound (WAT->FNH), False = return (FNH->WAT)
 _outbound = True
+# View: False = departures board, True = next train's calling points
+_calling_view = False
 _STALE_SECS = 120
 
 
@@ -52,16 +54,16 @@ def _auto_brightness():
 
 
 def _handle_buttons():
-    global _manual_brightness, _outbound
+    global _manual_brightness, _outbound, _calling_view
     current = _manual_brightness if _manual_brightness is not None else _auto_brightness()
     if _button_a.read():
         _outbound = not _outbound  # flip travel direction
+    elif _button_b.read():
+        _calling_view = not _calling_view  # departures <-> calling points
     elif _button_x.read():
         _manual_brightness = min(1.0, current + 0.1)
     elif _button_y.read():
         _manual_brightness = max(0.2, current - 0.1)
-    elif _button_b.read():
-        _manual_brightness = None  # back to the day/night schedule
 
 
 def _apply_backlight():
@@ -113,7 +115,10 @@ def main():
             trains = mqtt.get_trains(_outbound)
             title = "WAT->FNH" if _outbound else "FNH->WAT"
 
-            display.render(trains, title, mqtt.get_wc_status(), mqtt.get_wc_reason(), secs)
+            if _calling_view:
+                display.render_calling(mqtt.get_calling(_outbound), title, secs)
+            else:
+                display.render(trains, title, mqtt.get_wc_status(), mqtt.get_wc_reason(), secs)
             _update_led(trains, stale)
         except Exception as e:
             print("loop error:", e)

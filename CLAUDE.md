@@ -78,9 +78,10 @@ Because Darwin's Push Port usually lacks `scheduleFormations` for our services, 
 
 ## MQTT
 
-- Train topics: `trains/WAT/FNH` (outbound) and `trains/FNH/WAT` (return); the Pico's A button toggles which is shown
+- Train topics: `trains/WAT/FNH` (outbound) and `trains/FNH/WAT` (return); the Pico's A button toggles direction, B toggles departures ↔ calling-points view
 - Payload: JSON array of up to 6 trains, sorted by `std`
 - Schema: `[{rid, std, etd, platform, cancelled, eta_dest, length?, first?}, ...]` (`eta_dest` = predicted arrival at the destination; `length` = coach count from Darwin SF or the LDBSV fallback; `first` = First-class count, Darwin SF only, when available)
+- Calling-points topics: `trains/WAT/FNH/calling` and `trains/FNH/WAT/calling` — the **next** train's stops for the B-button view, payload `{rid, std, stops: [{name, time, platform?}, ...]}` (from LDBSV `subsequentLocations`, up to the destination)
 - W&C line topic: `lines/waterloo-city`, payload `{status, reason}` (from the TfL API, polled every 60s by the bridge)
 - All published with `retain=True` so the Pico gets current state on connect
 
