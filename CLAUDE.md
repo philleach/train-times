@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Internet-connected embedded display showing upcoming Waterloo → Farnham train departures with predicted arrival times.
 
-**Architecture:** Darwin RTII Kafka (Confluent Cloud) → bridge → HiveMQ Cloud MQTT → Pico 2W → Pimoroni Display
+**Architecture:** Darwin RTII Kafka (Confluent Cloud) → bridge → MQTT broker (self-hosted Mosquitto over Tailscale Funnel, or HiveMQ Cloud) → Pico 2W → Pimoroni Display
 
 ## Project Structure
 
@@ -33,17 +33,20 @@ main.py       Desktop test tool (RTT API, verifies credentials)
 - **MCU:** Raspberry Pi Pico 2W (RP2350)
 - **Display:** Pimoroni Pico Display Pack 2.8" (ST7789, 320×240)
 - Display constant in picographics: `DISPLAY_PICO_DISPLAY_2`
-- **Broker:** HiveMQ Cloud (TLS, port 8883)
+- **Broker:** self-hosted Mosquitto exposed via Tailscale Funnel (bridge publishes to loopback with `MQTT_TLS=0`; Pico connects to the Funnel hostname on port 443 over TLS), or HiveMQ Cloud (TLS, port 8883)
 
 ## Bridge Setup
 
-```bash
-pip install confluent-kafka paho-mqtt
-cp bridge/.env.example bridge/.env   # fill in credentials
-python bridge/bridge.py
+Bridge deps (`confluent-kafka`, `paho-mqtt`, `python-dotenv`) are declared in `pyproject.toml`, so use `uv` — no separate `pip install`. `config.py` loads `bridge/.env` automatically via `load_dotenv`.
 
-# Debug: print raw Darwin payloads to verify field names
-DEBUG_RAW=1 python bridge/bridge.py
+```bash
+uv sync
+cp bridge/.env.example bridge/.env   # fill in credentials
+uv run python bridge/bridge.py
+
+# Debug: raw Darwin payloads + debug-level logging (verifies field names,
+# and shows formation parse/apply/drop decisions)
+DEBUG_RAW=1 uv run python bridge/bridge.py
 ```
 
 ## Pico 2W Setup
