@@ -399,6 +399,10 @@ def run():
     global _REASON_MAP
     if config.LDBSV_KEY:
         _REASON_MAP = ldbsv.fetch_reason_map(config.LDBSV_KEY, config.LDBSV_BASE_URL)
+    if not _REASON_MAP:
+        import reason_codes
+        _REASON_MAP = reason_codes.REASON_MAP
+        log.info("Using static reason map: %d codes", len(_REASON_MAP))
 
     directions = [
         Direction("WAT→FNH", WATRLMN, FARNHAM, config.MQTT_TOPIC, "WAT", "FNH"),
