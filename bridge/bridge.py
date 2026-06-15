@@ -122,7 +122,8 @@ class Direction:
             return
         mqtt_client.publish(self.topic, payload, retain=True)
         self.last_published = payload
-        log.info("[%s] Published %d trains", self.name, len(trains))
+        n_len = sum(1 for t in trains if t.get("length"))
+        log.info("[%s] Published %d trains (%d with coach count)", self.name, len(trains), n_len)
 
     def handle_schedules(self, pport: dict, mqtt_client: mqtt.Client):
         now = _now_mins()
@@ -205,6 +206,12 @@ class Direction:
             log.info("[%s] %s formation: %d cars%s", self.name, rid,
                      fo["length"], f" ({fo['first']} first)" if fo["first"] else "")
             self.publish(mqtt_client)
+        elif DEBUG_RAW:
+            where = ("in-state" if rid in self.state else
+                     "known" if rid in self.known_rids else
+                     "pending" if rid in self.pending else "untracked")
+            log.debug("[%s] cached formation rid=%s (%s) %d cars",
+                      self.name, rid, where, fo["length"])
 
 
 _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
