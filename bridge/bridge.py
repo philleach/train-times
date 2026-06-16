@@ -13,6 +13,7 @@ Two Darwin message types are used:
 import json
 import logging
 import os
+import signal
 import threading
 import time
 import urllib.error
@@ -319,6 +320,11 @@ _HEARTBEAT_INTERVAL = 30   # publish a heartbeat this often so the Pico knows th
 _WC_EVERY_N_TICKS = 2      # poll TfL once every N heartbeats (~60s)
 _LDBSV_INTERVAL = 60       # how often to top up coach counts from LDBSV
 _PRUNE_INTERVAL = 15       # how often to drop departed services from the board
+# On startup, rewind this many hours to rebuild state. Replaying the whole day of
+# the full-network Push Port is far too slow and re-runs on every restart; a few
+# hours is enough to repopulate the next departures (via schedules and the live-TS
+# pending path). Override with REPLAY_HOURS if needed.
+_REPLAY_HOURS = int(os.getenv("REPLAY_HOURS", "3"))
 _REASON_MAP: dict = {}     # delay/cancel reason code -> text, loaded at startup
 
 
@@ -379,21 +385,21 @@ def _make_consumer() -> Consumer:
     })
 
 
-def _seek_to_start_of_day(consumer: Consumer, topic: str):
-    """Seek all partitions to midnight UTC so we catch today's schedules."""
-    midnight_ms = int(time.mktime(time.strptime(
-        time.strftime("%Y-%m-%d"), "%Y-%m-%d"
-    )) * 1000)
+def _seek_back(consumer: Consumer, topic: str, hours: int):
+    """Seek all partitions back `hours` hours so we rebuild recent state."""
+    since_ms = int(time.time() * 1000) - hours * 3600 * 1000
     metadata = consumer.list_topics(topic, timeout=10)
     partitions = [
-        TopicPartition(topic, p, midnight_ms)
+        TopicPartition(topic, p, since_ms)
         for p in metadata.topics[topic].partitions
     ]
     offsets = consumer.offsets_for_times(partitions, timeout=10)
+    seeked = 0
     for tp in offsets:
         if tp.offset >= 0:
             consumer.seek(tp)
-    log.info("Seeked to start of day across %d partition(s)", len(offsets))
+            seeked += 1
+    log.info("Seeked back %dh across %d partition(s)", hours, seeked)
 
 
 def _make_mqtt() -> mqtt.Client:
@@ -407,16 +413,19 @@ def _make_mqtt() -> mqtt.Client:
     return client
 
 
+def _handle_term(signum, frame):
+    # Turn SIGTERM (systemctl stop/restart) into a KeyboardInterrupt so run()'s
+    # finally closes the consumer cleanly — otherwise it never leaves the Kafka
+    # group, and the next start waits out a long rebalance.
+    raise KeyboardInterrupt
+
+
 def run():
+    signal.signal(signal.SIGTERM, _handle_term)
+
     consumer = _make_consumer()
     consumer.subscribe([config.KAFKA_TOPIC])
     log.info("Subscribed to Kafka topic: %s", config.KAFKA_TOPIC)
-
-    # Wait for partition assignment, then rewind to midnight to catch today's schedules
-    while not consumer.assignment():
-        consumer.poll(timeout=1.0)
-    _seek_to_start_of_day(consumer, config.KAFKA_TOPIC)
-    log.info("Replaying from start of day to build schedule state...")
 
     mqtt_client = _make_mqtt()
     log.info("Connected to MQTT at %s:%s", config.MQTT_HOST, config.MQTT_PORT)
@@ -434,7 +443,8 @@ def run():
         Direction("FNH→WAT", FARNHAM, WATRLMN, config.MQTT_TOPIC_RETURN, "FNH", "WAT"),
     ]
 
-    # Publish W&C status immediately, then poll every 60s
+    # Bring up W&C + the heartbeat poller before the Kafka wait, so the display
+    # shows a live feed while the consumer is still being assigned / catching up.
     result = _fetch_wc_status()
     if result:
         status, reason = result
@@ -447,6 +457,14 @@ def run():
     last_ldbsv = 0.0
     last_prune = 0.0
     try:
+        # Wait for partition assignment, then rewind a bounded window to rebuild state.
+        t0 = time.monotonic()
+        while not consumer.assignment():
+            consumer.poll(timeout=1.0)
+        log.info("Partition assignment took %.0fs", time.monotonic() - t0)
+        _seek_back(consumer, config.KAFKA_TOPIC, _REPLAY_HOURS)
+        log.info("Replaying last %dh to build schedule state...", _REPLAY_HOURS)
+
         while True:
             msg = consumer.poll(timeout=1.0)
 

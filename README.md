@@ -78,15 +78,19 @@ Leave `LDBSV_KEY` unset to disable the lookup. The board only confirms formation
 
 ### Run as a systemd service
 
+The deployed unit on the box (`rene`) is named **`train-bridge`** (not
+`train-times`), runs from `/home/phil/projects/train-times`, and starts with
+`--no-sync` so a restart doesn't re-resolve deps:
+
 ```ini
-# /etc/systemd/system/train-times.service
+# /etc/systemd/system/train-bridge.service
 [Unit]
-Description=Darwin → MQTT train times bridge
+Description=Darwin -> MQTT train bridge
 After=network-online.target
 
 [Service]
-WorkingDirectory=/home/pi/train-times
-ExecStart=/usr/bin/env uv run python bridge/bridge.py
+WorkingDirectory=/home/phil/projects/train-times
+ExecStart=/usr/bin/env uv run --no-sync python bridge/bridge.py
 Restart=on-failure
 RestartSec=10
 
@@ -95,9 +99,12 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now train-times
-sudo journalctl -fu train-times
+sudo systemctl restart train-bridge      # after a git pull, to deploy new code
+sudo journalctl -fu train-bridge         # follow logs
 ```
+
+Because of `--no-sync`, if you ever change the bridge's dependencies you must run
+`uv sync` on the box before restarting.
 
 ## Pico 2W setup
 
