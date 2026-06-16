@@ -13,6 +13,7 @@ Internet-connected embedded display showing upcoming Waterloo → Farnham train 
 ```
 bridge/       Darwin→MQTT bridge (Python, runs anywhere)
 pico/         Pico 2W MicroPython (deployed to device)
+web/          Mobile web client — htmx/Tailwind view over the MQTT feed
 main.py       Desktop test tool (RTT API, verifies credentials)
 ```
 
@@ -27,6 +28,17 @@ main.py       Desktop test tool (RTT API, verifies credentials)
 - `mqtt.py` — MQTT subscriber; receives train list from bridge
 - `trains.py` — status formatting (ON TIME / +Nm / CANC)
 - `display.py` — Pimoroni picographics driver (320×240)
+
+### Web (`web/`)
+Mobile-friendly client; a pure **view** over the same retained MQTT topics the
+bridge publishes (no Darwin/LDBSV logic). Flask renders htmx-swappable HTML
+styled with Tailwind (both via CDN, no build step). Run from the repo root with
+the shared `uv` env: `uv run python web/server.py`.
+- `server.py` — Flask routes: `/` (page) and `/board?dir=out|ret` (htmx fragment, self-refreshes every 15s)
+- `state.py` — MQTT subscriber caching the latest retained payload per topic
+- `formatting.py` — status/`view_model` formatting (ported from `pico/trains.py`)
+- `config.py` — MQTT + web host (gitignored `web/.env`; copy from `.env.example`)
+- `templates/` — `index.html` shell + `_board.html` board fragment
 
 ## Hardware
 

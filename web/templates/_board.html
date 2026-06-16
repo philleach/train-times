@@ -1,0 +1,85 @@
+<div id="board-root"
+     hx-get="/board?dir={{ dir }}"
+     hx-trigger="every 15s"
+     hx-swap="outerHTML"
+     hx-indicator="#refreshing">
+
+  <!-- direction toggle -->
+  <div class="flex gap-2 mb-3">
+    {% for key, m in [(dir, meta), (other, other_meta)] %}
+    <button
+      hx-get="/board?dir={{ key }}"
+      hx-target="#board-root"
+      hx-swap="outerHTML"
+      class="flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition
+             {% if key == dir %}bg-sky-600 text-white{% else %}bg-slate-800 text-slate-300{% endif %}">
+      {{ m.title }}
+    </button>
+    {% endfor %}
+  </div>
+
+  <!-- header / feed state -->
+  <div class="flex items-baseline justify-between mb-2">
+    <h1 class="text-lg font-bold">{{ meta.from }} → {{ meta.to }}</h1>
+    <span class="flex items-center gap-1.5 text-xs text-slate-400">
+      <span id="refreshing" class="htmx-indicator">…</span>
+      {% if stale %}
+        <span class="inline-block h-2 w-2 rounded-full bg-rose-500"></span> feed offline
+      {% else %}
+        <span class="inline-block h-2 w-2 rounded-full bg-emerald-500"></span> live
+      {% endif %}
+    </span>
+  </div>
+
+  <!-- Waterloo & City line status -->
+  {% if wc and wc.status %}
+  <div class="mb-3 rounded-lg bg-slate-900 px-3 py-2 text-xs">
+    <span class="font-semibold">W&amp;C line:</span>
+    <span class="{% if 'Good' in wc.status %}text-emerald-400{% else %}text-amber-400{% endif %}">{{ wc.status }}</span>
+    {% if wc.reason %}<span class="text-slate-400">— {{ wc.reason }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- departures -->
+  {% if trains %}
+  <ul class="space-y-2">
+    {% for t in trains %}
+    <li class="rounded-xl bg-slate-900 px-4 py-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-baseline gap-3">
+          <span class="text-2xl font-bold tabular-nums {% if t.severity == 2 %}line-through text-slate-500{% endif %}">{{ t.std }}</span>
+          <span class="text-sm font-semibold {{ t.status_class }}">{{ t.status }}</span>
+        </div>
+        <div class="text-right">
+          {% if t.due and t.severity != 2 %}<div class="text-sm font-semibold text-slate-200">{{ t.due }}</div>{% endif %}
+          {% if t.platform %}<div class="text-xs text-slate-400">Plat {{ t.platform }}</div>{% endif %}
+        </div>
+      </div>
+      <div class="mt-1 flex items-center justify-between text-xs text-slate-400">
+        <span>
+          {% if t.eta_dest %}arr {{ meta.to }} {{ t.eta_dest }}{% endif %}
+        </span>
+        <span>
+          {% if t.length %}{{ t.length }} cars{% if t.first %} · {{ t.first }} first{% endif %}{% endif %}
+        </span>
+      </div>
+      {% if t.reason %}<div class="mt-1 text-xs text-amber-400/90">{{ t.reason }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="rounded-xl bg-slate-900 px-4 py-6 text-center text-sm text-slate-400">
+    {% if connected %}No upcoming departures.{% else %}Connecting to feed…{% endif %}
+  </p>
+  {% endif %}
+
+  <!-- disruption banner -->
+  {% if alerts %}
+  <div class="mt-4 space-y-1">
+    {% for a in alerts %}
+    <div class="rounded-lg bg-amber-950/60 px-3 py-2 text-xs text-amber-200">{{ a }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>

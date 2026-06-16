@@ -9,6 +9,7 @@ dependencies = [
     "paho-mqtt",
     "httpx",
     "python-dotenv>=1.2.2",
+    "flask>=3.0",
 ]
 
 [tool.pytest.ini_options]
