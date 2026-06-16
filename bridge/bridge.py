@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 import paho.mqtt.client as mqtt
 from confluent_kafka import Consumer, KafkaError, TopicPartition
@@ -48,7 +49,20 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Darwin times (std/etd/eta) are railway-local — Europe/London. Compute "now" in
+# that zone too, regardless of the host's clock, or a UTC server would be an hour
+# off during BST and keep departed services on screen long after they've left.
+try:
+    from zoneinfo import ZoneInfo
+    _LONDON: "ZoneInfo | None" = ZoneInfo("Europe/London")
+except Exception:  # zoneinfo/tzdata unavailable — fall back to host local time
+    _LONDON = None
+
+
 def _now_mins() -> int:
+    if _LONDON is not None:
+        t = datetime.now(_LONDON)
+        return t.hour * 60 + t.minute
     t = time.localtime()
     return t[3] * 60 + t[4]
 
@@ -58,6 +72,16 @@ def _hhmm_to_mins(hhmm: str) -> int:
         return int(hhmm[:2]) * 60 + int(hhmm[3:5])
     except Exception:
         return 0
+
+
+def _mins_since(hhmm: str, now: int) -> int:
+    """Minutes elapsed since the time-of-day `hhmm`, relative to `now` (also a
+    minute-of-day). Handles the midnight wrap: a 23:50 departure read just after
+    00:00 is treated as ~minutes ago, not ~24h in the future."""
+    delta = now - _hhmm_to_mins(hhmm)
+    if delta < -720:  # std is "yesterday" across the midnight boundary
+        delta += 1440
+    return delta
 
 
 class Direction:
@@ -88,7 +112,7 @@ class Direction:
         now = _now_mins()
         stale = [
             rid for rid, t in self.state.items()
-            if t.get("std") and _hhmm_to_mins(t["std"]) < now - 2
+            if t.get("std") and _mins_since(t["std"], now) > 2
         ]
         for rid in stale:
             del self.state[rid]
@@ -97,7 +121,7 @@ class Direction:
             log.debug("[%s] Pruned departed service %s", self.name, rid)
         for rid in [
             rid for rid, t in self.pending.items()
-            if t.get("std") and _hhmm_to_mins(t["std"]) < now - 2
+            if t.get("std") and _mins_since(t["std"], now) > 2
         ]:
             del self.pending[rid]
 
@@ -139,7 +163,7 @@ class Direction:
             rid = sched["rid"]
             if rid in self.known_rids:
                 continue
-            if _hhmm_to_mins(sched["std"]) < now - 2:
+            if _mins_since(sched["std"], now) > 2:
                 continue  # already departed
             self.known_rids.add(rid)
             self.state[rid] = {
@@ -178,7 +202,7 @@ class Direction:
         if dep:
             rid = dep["rid"]
             if rid not in self.known_rids and rid not in self.pending:
-                if _hhmm_to_mins(dep["std"]) >= now - 2:
+                if _mins_since(dep["std"], now) <= 2:
                     self.pending[rid] = dep
                     log.debug("[%s] Pending departure: %s dep %s", self.name, rid, dep["std"])
 
@@ -294,6 +318,7 @@ _TFL_URL = "https://api.tfl.gov.uk/Line/waterloo-city/Status"
 _HEARTBEAT_INTERVAL = 30   # publish a heartbeat this often so the Pico knows the feed is live
 _WC_EVERY_N_TICKS = 2      # poll TfL once every N heartbeats (~60s)
 _LDBSV_INTERVAL = 60       # how often to top up coach counts from LDBSV
+_PRUNE_INTERVAL = 15       # how often to drop departed services from the board
 _REASON_MAP: dict = {}     # delay/cancel reason code -> text, loaded at startup
 
 
@@ -420,6 +445,7 @@ def run():
     poller_thread.start()
 
     last_ldbsv = 0.0
+    last_prune = 0.0
     try:
         while True:
             msg = consumer.poll(timeout=1.0)
@@ -432,6 +458,15 @@ def run():
                 last_ldbsv = now_t
                 for direction in directions:
                     direction.enrich_from_ldbsv(mqtt_client)
+
+            # Drop departed services on a steady cadence. publish() prunes via
+            # _upcoming() and dedups, so this is a no-op unless the board changed.
+            # Without this, pruning only happens when a Kafka update or LDBSV poll
+            # triggers a publish — so a departed train can hold a slot for minutes.
+            if now_t - last_prune >= _PRUNE_INTERVAL:
+                last_prune = now_t
+                for direction in directions:
+                    direction.publish(mqtt_client)
 
             if msg is None:
                 continue
