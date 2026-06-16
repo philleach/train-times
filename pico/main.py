@@ -8,7 +8,7 @@ from pimoroni import RGBLED, Button
 import config
 import display
 import mqtt
-from trains import severity
+from trains import london_offset, severity
 
 # Pico Display Pack 2.8": onboard RGB LED + 4 buttons
 _led = RGBLED(6, 7, 8)
@@ -57,7 +57,7 @@ def _ensure_connected(wlan):
 
 def _auto_brightness():
     t = time.localtime()
-    hour = (t[3] + config.UTC_OFFSET) % 24
+    hour = (t[3] + london_offset(t)) % 24
     return 0.3 if (hour >= 23 or hour < 6) else 1.0
 
 

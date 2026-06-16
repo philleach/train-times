@@ -3,8 +3,7 @@ import time
 
 from picographics import DISPLAY_PICO_DISPLAY_2, PicoGraphics
 
-import config
-from trains import format_status, mins_until, severity, short_status
+from trains import format_status, london_offset, mins_until, severity, short_status
 
 display = PicoGraphics(display=DISPLAY_PICO_DISPLAY_2)
 WIDTH, HEIGHT = display.get_bounds()  # 320x240
@@ -50,7 +49,7 @@ def _blink(period_ms=500):
 
 def _now_mins():
     t = time.localtime()
-    hour = (t[3] + config.UTC_OFFSET) % 24
+    hour = (t[3] + london_offset(t)) % 24
     return hour * 60 + t[4]
 
 
@@ -86,7 +85,7 @@ def _wc_colour(status):
 
 def _draw_header(title, stale):
     t = time.localtime()
-    hour = (t[3] + config.UTC_OFFSET) % 24
+    hour = (t[3] + london_offset(t)) % 24
     clock = "{:02d}:{:02d}".format(hour, t[4])
     display.set_font(_FONT)
     display.set_pen(_TEXT)

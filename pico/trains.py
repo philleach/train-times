@@ -1,3 +1,35 @@
+import time
+
+
+def london_offset(t=None) -> int:
+    """Hours to add to UTC for UK civil time: 1 during BST, else 0.
+
+    `t` is a UTC time tuple (defaults to time.localtime(), which is UTC on the
+    Pico since NTP sets the clock to UTC). Computed from the DST rules so it's
+    always right without a twice-yearly manual config change: clocks switch at
+    01:00 UTC on the last Sunday of March (GMT->BST) and October (BST->GMT).
+    MicroPython weekday is Mon=0 .. Sun=6.
+    """
+    if t is None:
+        t = time.localtime()
+    month, mday, hour, wd = t[1], t[2], t[3], t[6]
+    if month < 3 or month > 10:
+        return 0
+    if 3 < month < 10:
+        return 1
+    # March and October both have 31 days; find that month's last Sunday.
+    weekday_31 = (wd + (31 - mday)) % 7
+    last_sunday = 31 - ((weekday_31 + 1) % 7)
+    if month == 3:
+        if mday != last_sunday:
+            return 1 if mday > last_sunday else 0
+        return 1 if hour >= 1 else 0
+    # October
+    if mday != last_sunday:
+        return 1 if mday < last_sunday else 0
+    return 0 if hour >= 1 else 1
+
+
 def format_status(train: dict) -> str:
     if train.get("cancelled"):
         return "CANC"

@@ -10,4 +10,4 @@ MQTT_HOST = "efac7ce3a9e7452cb6acc38d6349b2f6.s1.eu.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "train-times-bridge"
 MQTT_PASSWORD = "your-mqtt-password"
-UTC_OFFSET = 1  # BST = UTC+1; change to 0 in winter
+# GMT/BST is derived automatically from the (UTC) clock — no manual offset needed.
