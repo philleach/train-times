@@ -103,8 +103,22 @@ def main():
     except Exception:
         pass
 
+    # Retry the initial connect, then reboot — otherwise a transient DNS/uplink
+    # blip at boot (e.g. the upstream router still coming up) would throw out of
+    # main() and leave the Pico dead at the REPL until a manual power-cycle.
     display.show_status("Connecting MQTT...")
-    mqtt.connect(config.MQTT_HOST, config.MQTT_PORT, config.MQTT_USER, config.MQTT_PASSWORD)
+    for _ in range(10):
+        try:
+            mqtt.connect(config.MQTT_HOST, config.MQTT_PORT, config.MQTT_USER, config.MQTT_PASSWORD)
+            break
+        except OSError as e:
+            print("MQTT connect failed:", e)
+            display.show_status("MQTT retry...")
+            time.sleep(6)
+    else:
+        display.show_status("MQTT failed")
+        time.sleep(10)
+        machine.reset()
     display.show_status("Waiting for trains...")
 
     while True:

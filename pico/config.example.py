@@ -6,8 +6,11 @@ WIFI_PASSWORD = "your-wifi-password"
 WIFI_FALLBACKS = [
     # ("hotspot-ssid", "hotspot-password"),
 ]
-MQTT_HOST = "efac7ce3a9e7452cb6acc38d6349b2f6.s1.eu.hivemq.cloud"
-MQTT_PORT = 8883
-MQTT_USER = "train-times-bridge"
+# Self-hosted Mosquitto exposed via Tailscale Funnel: connect on 443 over TLS
+# (the Funnel terminates TLS and forwards to the broker). Use the Funnel
+# hostname here, not a HiveMQ host.
+MQTT_HOST = "rene.tail99dd83.ts.net"
+MQTT_PORT = 443
+MQTT_USER = "train-times"
 MQTT_PASSWORD = "your-mqtt-password"
 # GMT/BST is derived automatically from the (UTC) clock — no manual offset needed.
